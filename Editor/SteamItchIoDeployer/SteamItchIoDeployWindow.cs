@@ -1132,12 +1132,21 @@ namespace SteamItchIoDeployer
 			{
 	#if UNITY_6000_0_OR_NEWER
 				if (_buildDeployConfig != null && _buildDeployConfig.BuildProfile != null)
-					UnityEditor.Build.Profile.BuildProfile.SetActiveBuildProfile(_buildDeployConfig.BuildProfile);
+				{
+					BuildTarget profileTarget = GetBuildTargetFromProfile(_buildDeployConfig.BuildProfile);
+					var profileOptions = new BuildPlayerWithProfileOptions
+					{
+						buildProfile = _buildDeployConfig.BuildProfile,
+						locationPathName = GetBuildLocationPath(outputPath, profileTarget),
+						options = BuildOptions.None,
+					};
+
+					return BuildPipeline.BuildPlayer(profileOptions);
+				}
 	#endif
 
 				BuildPlayerOptions opts = GetBuildPlayerOptionsWithoutDialog();
-				string exe = Application.productName + GetExeExtension(opts.target);
-				opts.locationPathName = Path.Combine(outputPath, exe);
+				opts.locationPathName = GetBuildLocationPath(outputPath, opts.target);
 				return BuildPipeline.BuildPlayer(opts);
 			}
 			catch (TargetInvocationException ex)
@@ -1194,6 +1203,25 @@ namespace SteamItchIoDeployer
 				options = BuildOptions.None,
 			};
 		}
+
+		private static string GetBuildLocationPath(string outputPath, BuildTarget target)
+		{
+			return Path.Combine(outputPath, Application.productName + GetExeExtension(target));
+		}
+
+	#if UNITY_6000_0_OR_NEWER
+		private static BuildTarget GetBuildTargetFromProfile(UnityEditor.Build.Profile.BuildProfile buildProfile)
+		{
+			if (buildProfile == null)
+				throw new ArgumentNullException(nameof(buildProfile));
+
+			SerializedProperty buildTargetProperty = new SerializedObject(buildProfile).FindProperty("m_BuildTarget");
+			if (buildTargetProperty == null)
+				throw new InvalidOperationException("Unable to resolve Build Profile target platform.");
+
+			return (BuildTarget)buildTargetProperty.intValue;
+		}
+	#endif
 
 		private void SubmitSteamGuardCode()
 		{
@@ -1577,6 +1605,7 @@ namespace SteamItchIoDeployer
 				case BuildTarget.StandaloneWindows:
 				case BuildTarget.StandaloneWindows64: return ".exe";
 				case BuildTarget.StandaloneOSX: return ".app";
+				case BuildTarget.StandaloneLinux64: return ".x86_64";
 				default: return "";
 			}
 		}
