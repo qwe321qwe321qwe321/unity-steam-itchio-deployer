@@ -34,10 +34,6 @@ namespace SteamItchIoDeployer
                  "Example: *.pdb, _BurstDebugInformation_DoNotShip, *.lib")]
         public string IgnoreFiles = "*.pdb, _BurstDebugInformation_DoNotShip";
 
-        [Tooltip("Absolute filesystem path to the directory where Unity outputs the build. " +
-                 "This same directory is used as the depot content root for the Steam upload.")]
-        public string BuildOutputPath = "";
-
         [Tooltip("Human-readable description for this build shown in the Steamworks build history. " +
                  "Supports {Version} and {Date} macro substitution (e.g., 'v{Version} built on {Date}').")]
         public string BuildDescription = "v{Version} - {Date}";

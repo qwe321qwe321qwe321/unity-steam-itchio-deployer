@@ -12,13 +12,13 @@ Unity Editor plugin for building once and deploying the same build to Steam and 
 
 - Multi-target deployment: select **Steam**, **itch.io**, or both.
 - Shared **Build & Upload** pipeline: one Unity build, then sequential uploads to each selected platform.
-- Separate config assets for each platform: `SteamDeployConfig` and `ItchIoDeployConfig`.
+- Separate config assets for shared build/deploy settings and per-platform settings: `BuildDeployConfig`, `SteamDeployConfig`, and `ItchIoDeployConfig`.
 - Tabbed per-platform settings and auth UI while keeping one shared console log.
 - Steam upload via generated VDF scripts and asynchronous `steamcmd` execution.
 - itch.io upload via asynchronous `butler push` using `BUTLER_API_KEY`.
 - Steam Guard retry flow for Steam uploads without rebuilding.
 - AES-256 encrypted credentials stored in `EditorPrefs`, never in project assets.
-- Configurable build output path stored per platform config as absolute or project-relative path.
+- Shared deploy targets, build output path, and Unity 6+ build profile stored in `BuildDeployConfig`.
 - Unity 6+ Build Profile support.
 
 ---
@@ -57,14 +57,25 @@ Copy the `Editor/SteamItchIoDeployer/` folder into any `Editor/` directory in th
 
 ### 1. Create config assets
 
-The window can create both platform configs:
+The window can create all config assets:
 
+- **Create Build/Deploy Config Asset**
 - **Create Steam Config Asset**
 - **Create itch.io Config Asset**
 
-Both assets are non-sensitive and safe to commit.
+All three assets are non-sensitive and safe to commit.
 
-### 2. Select deploy targets
+### 2. Shared build/deploy settings
+
+`BuildDeployConfig` contains:
+
+- `DeployTargets`
+- `BuildOutputPath`
+- `BuildProfile` on Unity 6+
+
+This asset stores non-sensitive shared workflow settings, so deploy target selection and build profile no longer rely on `EditorPrefs`.
+
+### 3. Select deploy targets
 
 At the top of the window, enable one or more targets:
 
@@ -73,7 +84,7 @@ At the top of the window, enable one or more targets:
 
 If both are enabled, the tool builds once and uploads to both sequentially.
 
-### 3. Steam settings
+### 4. Steam settings
 
 `SteamDeployConfig` contains:
 
@@ -84,7 +95,6 @@ If both are enabled, the tool builds once and uploads to both sequentially.
 - `BuildDescription`
 - `IgnoreFiles`
 - `SteamCmdPath`
-- `BuildOutputPath`
 
 Steam auth is entered in the Steam tab:
 
@@ -93,7 +103,7 @@ Steam auth is entered in the Steam tab:
 - optional encrypted save to `EditorPrefs`
 - `Test Steam Login`
 
-### 4. itch.io settings
+### 5. itch.io settings
 
 `ItchIoDeployConfig` contains:
 
@@ -104,7 +114,6 @@ Steam auth is entered in the Steam tab:
 - `IgnoreFiles`
 - `Hidden`
 - `IfChanged`
-- `BuildOutputPath`
 
 itch.io auth is entered in the itch.io tab:
 
@@ -115,7 +124,7 @@ The API key is injected into the child process as the `BUTLER_API_KEY` environme
 
 Note: some butler versions do not support hidden-channel creation flags consistently. The current tool keeps the `Hidden` setting in the config/UI for future compatibility, but prioritizes successful uploads over forcing that flag.
 
-### 5. Getting `BUTLER_API_KEY`
+### 6. Getting `BUTLER_API_KEY`
 
 Use either of these approaches:
 
@@ -131,9 +140,9 @@ Notes:
 - On Linux, the path is `~/.config/itch/butler_creds`
 - Treat the API key like a password. If it leaks, revoke it from the itch.io API keys page and create a new one.
 
-### 6. Shared build output path
+### 7. Shared build output path
 
-If both Steam and itch.io are selected together, they must point to the same `BuildOutputPath`. This keeps the workflow consistent: build once, upload the same build to both services.
+`BuildOutputPath` now lives in `BuildDeployConfig` and is shared by all selected targets. This keeps the workflow consistent: build once, upload the same build to Steam and/or itch.io.
 
 ---
 
@@ -190,6 +199,7 @@ Create a butler API key from your itch.io account settings, then paste it into t
 
 ```text
 Editor/SteamItchIoDeployer/
+├── BuildDeployConfig.cs         Shared build/deploy config asset
 ├── SteamDeployConfig.cs        Steam-specific config asset
 ├── ItchIoDeployConfig.cs       itch.io-specific config asset
 ├── CryptographyHelper.cs       AES-256 encrypt/decrypt, EditorPrefs ciphertext management

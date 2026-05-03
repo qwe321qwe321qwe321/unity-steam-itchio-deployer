@@ -25,14 +25,6 @@ namespace SteamItchIoDeployer
 			Failed,
 		}
 
-		[Flags]
-		private enum DeployTargets
-		{
-			None   = 0,
-			Steam  = 1 << 0,
-			ItchIo = 1 << 1,
-		}
-
 		private enum PlatformTab
 		{
 			Steam,
@@ -40,20 +32,18 @@ namespace SteamItchIoDeployer
 		}
 
 		private const string SteamUsernamePrefsKey = "SteamDeployer_Username";
-		private const string DeployTargetsPrefsKey = "SteamDeployer_SelectedTargets";
 		private const string ItchIoSaveApiKeyPrefsKey = "SteamDeployer_ItchioSaveApiKey";
 		private const string ItchIoApiKeyCipherPrefsKey = "SteamDeployer_EncryptedItchioApiKey";
-		private const string BuildProfilePrefsKey = "SteamDeployer_BuildProfilePath";
 		private const int MaxLogBufferChars = 60_000;
 
 		private DeployState _state = DeployState.Setup;
 		private string _taskLabel = "";
 		private float _progressValue;
 
+		private BuildDeployConfig _buildDeployConfig;
 		private SteamDeployConfig _steamConfig;
 		private ItchIoDeployConfig _itchIoConfig;
 
-		private DeployTargets _selectedTargets = DeployTargets.Steam;
 		private PlatformTab _selectedTab = PlatformTab.Steam;
 
 		private string _steamUsername = "";
@@ -91,10 +81,6 @@ namespace SteamItchIoDeployer
 		private GUIStyle _warningBoxStyle;
 		private bool _stylesReady;
 
-	#if UNITY_6000_0_OR_NEWER
-		private UnityEditor.Build.Profile.BuildProfile _buildProfile;
-	#endif
-
 		[MenuItem("Tools/Steam itch.io Deployer/Open Window")]
 		public static void OpenWindow()
 		{
@@ -107,10 +93,7 @@ namespace SteamItchIoDeployer
 		{
 			TryLoadConfigs();
 			RefreshExecutableExists();
-			LoadSavedDeployTargets();
-	#if UNITY_6000_0_OR_NEWER
-			LoadSavedBuildProfile();
-	#endif
+			EnsureBuildDeployDefaults();
 
 			_steamUsername = EditorPrefs.GetString(SteamUsernamePrefsKey, "");
 			if (CryptographyHelper.HasStoredPassword())
@@ -208,8 +191,9 @@ namespace SteamItchIoDeployer
 				EditorGUILayout.LabelField("Deploy Targets", EditorStyles.boldLabel);
 				EditorGUILayout.HelpBox("Select one or more upload targets. Build runs once, then uploads to each selected platform in sequence.", MessageType.None);
 
-				bool steam = (_selectedTargets & DeployTargets.Steam) != 0;
-				bool itch = (_selectedTargets & DeployTargets.ItchIo) != 0;
+				DeployTargets selectedTargets = GetSelectedTargets();
+				bool steam = (selectedTargets & DeployTargets.Steam) != 0;
+				bool itch = (selectedTargets & DeployTargets.ItchIo) != 0;
 
 				using (var check = new EditorGUI.ChangeCheckScope())
 				{
@@ -218,10 +202,10 @@ namespace SteamItchIoDeployer
 
 					if (check.changed)
 					{
-						_selectedTargets = DeployTargets.None;
-						if (steam) _selectedTargets |= DeployTargets.Steam;
-						if (itch) _selectedTargets |= DeployTargets.ItchIo;
-						EditorPrefs.SetInt(DeployTargetsPrefsKey, (int)_selectedTargets);
+						selectedTargets = DeployTargets.None;
+						if (steam) selectedTargets |= DeployTargets.Steam;
+						if (itch) selectedTargets |= DeployTargets.ItchIo;
+						SetSelectedTargets(selectedTargets);
 
 						if (_selectedTab == PlatformTab.Steam && !steam && itch)
 							_selectedTab = PlatformTab.ItchIo;
@@ -241,6 +225,10 @@ namespace SteamItchIoDeployer
 
 				using (new EditorGUI.DisabledScope(locked))
 				{
+					_buildDeployConfig = (BuildDeployConfig)EditorGUILayout.ObjectField("Build/Deploy Config", _buildDeployConfig, typeof(BuildDeployConfig), false);
+					if (_buildDeployConfig == null && GUILayout.Button("Create Build/Deploy Config Asset"))
+						CreateBuildDeployConfigAsset();
+
 					_steamConfig = (SteamDeployConfig)EditorGUILayout.ObjectField("Steam Config", _steamConfig, typeof(SteamDeployConfig), false);
 					if (_steamConfig == null && GUILayout.Button("Create Steam Config Asset"))
 						CreateSteamConfigAsset();
@@ -255,8 +243,9 @@ namespace SteamItchIoDeployer
 
 		private void DrawPlatformTabs(bool locked)
 		{
-			bool hasSteam = _steamConfig != null || (_selectedTargets & DeployTargets.Steam) != 0;
-			bool hasItch = _itchIoConfig != null || (_selectedTargets & DeployTargets.ItchIo) != 0;
+			DeployTargets selectedTargets = GetSelectedTargets();
+			bool hasSteam = _steamConfig != null || (selectedTargets & DeployTargets.Steam) != 0;
+			bool hasItch = _itchIoConfig != null || (selectedTargets & DeployTargets.ItchIo) != 0;
 			if (!hasSteam && !hasItch)
 			{
 				hasSteam = true;
@@ -481,8 +470,6 @@ namespace SteamItchIoDeployer
 					}
 				}
 
-				DrawBuildOutputEditor(_steamConfig, _steamConfig.BuildOutputPath, value => _steamConfig.BuildOutputPath = value);
-
 				if (check.changed)
 					SaveConfig(_steamConfig, refreshExecutables: true);
 			}
@@ -573,8 +560,6 @@ namespace SteamItchIoDeployer
 					}
 				}
 
-				DrawBuildOutputEditor(_itchIoConfig, _itchIoConfig.BuildOutputPath, value => _itchIoConfig.BuildOutputPath = value);
-
 				if (check.changed)
 					SaveConfig(_itchIoConfig, refreshExecutables: true);
 			}
@@ -590,24 +575,38 @@ namespace SteamItchIoDeployer
 			}
 		}
 
-		private void DrawBuildOutputEditor(UnityEngine.Object configObject, string currentValue, Action<string> setter)
+		private void DrawBuildOutputEditor()
 		{
+			if (_buildDeployConfig == null)
+			{
+				EditorGUILayout.HelpBox("Assign or create a Build/Deploy config asset first.", MessageType.Warning);
+				return;
+			}
+
 			EditorGUILayout.Space(6);
 			EditorGUILayout.LabelField("Build Output Path", EditorStyles.boldLabel);
 
 			using (new GUILayout.HorizontalScope())
 			{
-				setter(EditorGUILayout.TextField(currentValue ?? ""));
+				_buildDeployConfig.BuildOutputPath = EditorGUILayout.TextField(_buildDeployConfig.BuildOutputPath ?? "");
 				if (GUILayout.Button("Browse…", GUILayout.Width(72)))
 				{
-					string browsed = EditorUtility.OpenFolderPanel("Select Build Output Folder", currentValue ?? "", "");
+					string browsed = EditorUtility.OpenFolderPanel("Select Build Output Folder", _buildDeployConfig.BuildOutputPath ?? "", "");
 					if (!string.IsNullOrEmpty(browsed))
 					{
-						setter(NormalizeProjectRelativePath(browsed));
-						SaveConfig(configObject, refreshExecutables: false);
+						_buildDeployConfig.BuildOutputPath = NormalizeProjectRelativePath(browsed);
+						SaveConfig(_buildDeployConfig, refreshExecutables: false);
 					}
 				}
 			}
+		}
+
+		private static string DescribeSelectedTargets(DeployTargets targets)
+		{
+			if (targets == DeployTargets.None) return "None";
+			if (targets == (DeployTargets.Steam | DeployTargets.ItchIo)) return "Steam + itch.io";
+			if (targets == DeployTargets.ItchIo) return "itch.io";
+			return "Steam";
 		}
 
 		private void DrawSteamCmdDownloadTools()
@@ -730,24 +729,13 @@ namespace SteamItchIoDeployer
 				}
 				else
 				{
-	#if UNITY_6000_0_OR_NEWER
-					EditorGUILayout.Space(4);
-					using (var check = new EditorGUI.ChangeCheckScope())
-					{
-						_buildProfile = (UnityEditor.Build.Profile.BuildProfile)EditorGUILayout.ObjectField(
-							new GUIContent(
-								"Build Profile",
-								"Optional: select a Unity 6+ Build Profile asset to activate before building. Leave empty to use the current active build settings."),
-							_buildProfile,
-							typeof(UnityEditor.Build.Profile.BuildProfile),
-							allowSceneObjects: false);
+					DrawSharedBuildSettingsFields(locked);
 
-						if (check.changed)
-							SaveBuildProfilePreference();
-					}
+	#if UNITY_6000_0_OR_NEWER
 	#endif
 
-					bool hasTargets = _selectedTargets != DeployTargets.None;
+					DeployTargets selectedTargets = GetSelectedTargets();
+					bool hasTargets = selectedTargets != DeployTargets.None;
 					bool canBuild = CanBuildSelectedTargets();
 					bool canUpload = hasTargets && ValidateSelectedTargetsForUpload(showDialogs: false) && CheckAnyBuildExecutableExists();
 					bool canBuildAndUpload = hasTargets && ValidateSelectedTargetsForUpload(showDialogs: false, requireCredentials: true, requireBuildOutput: true);
@@ -777,11 +765,57 @@ namespace SteamItchIoDeployer
 					if (!hasTargets)
 						EditorGUILayout.HelpBox("Select at least one target platform.", MessageType.Warning);
 					else if (!HasAnyBuildOutputPath())
-						EditorGUILayout.HelpBox("Set a build output path on at least one selected platform to enable Build.", MessageType.None);
+						EditorGUILayout.HelpBox("Set the shared build output path to enable Build.", MessageType.None);
 					else if (!canUpload)
 						EditorGUILayout.HelpBox("Upload needs valid platform settings and an existing executable in the selected build output path.", MessageType.None);
 				}
 			}
+			EditorGUILayout.Space(3);
+		}
+
+		private void DrawSharedBuildSettingsFields(bool locked)
+		{
+			using (new GUILayout.VerticalScope(_boxStyle))
+			{
+				EditorGUILayout.LabelField("Shared Build Settings", EditorStyles.boldLabel);
+
+				using (new EditorGUI.DisabledScope(locked || _buildDeployConfig == null))
+				{
+					if (_buildDeployConfig == null)
+					{
+						EditorGUILayout.HelpBox("Assign or create a Build/Deploy config asset first.", MessageType.Warning);
+						return;
+					}
+
+	#if UNITY_6000_0_OR_NEWER
+					using (var check = new EditorGUI.ChangeCheckScope())
+					{
+						_buildDeployConfig.BuildProfile = (UnityEditor.Build.Profile.BuildProfile)EditorGUILayout.ObjectField(
+							new GUIContent(
+								"Build Profile",
+								"Optional: select a Unity 6+ Build Profile asset to activate before building. Leave empty to use the current active build settings."),
+							_buildDeployConfig.BuildProfile,
+							typeof(UnityEditor.Build.Profile.BuildProfile),
+							allowSceneObjects: false);
+
+						if (check.changed)
+							SaveConfig(_buildDeployConfig, refreshExecutables: false);
+					}
+	#endif
+
+					using (var check = new EditorGUI.ChangeCheckScope())
+					{
+						DrawBuildOutputEditor();
+
+						if (check.changed)
+							SaveConfig(_buildDeployConfig, refreshExecutables: false);
+					}
+
+					EditorGUILayout.Space(4);
+					EditorGUILayout.LabelField($"Selected Targets: {DescribeSelectedTargets(GetSelectedTargets())}", EditorStyles.miniLabel);
+				}
+			}
+
 			EditorGUILayout.Space(3);
 		}
 
@@ -933,10 +967,11 @@ namespace SteamItchIoDeployer
 			_steamGuardCodeInput = "";
 
 			PersistSavedCredentials();
+			DeployTargets selectedTargets = GetSelectedTargets();
 
-			if ((_selectedTargets & DeployTargets.Steam) != 0)
+			if ((selectedTargets & DeployTargets.Steam) != 0)
 				_pendingUploads.Enqueue(DeployTargets.Steam);
-			if ((_selectedTargets & DeployTargets.ItchIo) != 0)
+			if ((selectedTargets & DeployTargets.ItchIo) != 0)
 				_pendingUploads.Enqueue(DeployTargets.ItchIo);
 		}
 
@@ -1065,8 +1100,8 @@ namespace SteamItchIoDeployer
 			try
 			{
 	#if UNITY_6000_0_OR_NEWER
-				if (_buildProfile != null)
-					UnityEditor.Build.Profile.BuildProfile.SetActiveBuildProfile(_buildProfile);
+				if (_buildDeployConfig != null && _buildDeployConfig.BuildProfile != null)
+					UnityEditor.Build.Profile.BuildProfile.SetActiveBuildProfile(_buildDeployConfig.BuildProfile);
 	#endif
 
 				BuildPlayerOptions opts = GetBuildPlayerOptionsWithoutDialog();
@@ -1246,13 +1281,14 @@ namespace SteamItchIoDeployer
 
 		private bool ValidateSelectedTargetsForUpload(bool showDialogs, bool requireCredentials = false, bool requireBuildOutput = false)
 		{
-			if (_selectedTargets == DeployTargets.None)
+			DeployTargets selectedTargets = GetSelectedTargets();
+			if (selectedTargets == DeployTargets.None)
 				return ShowValidationError(showDialogs, "Error", "No target platform selected.");
 
-			if ((_selectedTargets & DeployTargets.Steam) != 0 && !ValidateSteamSelection(showDialogs, requireCredentials, requireBuildOutput))
+			if ((selectedTargets & DeployTargets.Steam) != 0 && !ValidateSteamSelection(showDialogs, requireCredentials, requireBuildOutput))
 				return false;
 
-			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && !ValidateItchIoSelection(showDialogs, requireCredentials, requireBuildOutput))
+			if ((selectedTargets & DeployTargets.ItchIo) != 0 && !ValidateItchIoSelection(showDialogs, requireCredentials, requireBuildOutput))
 				return false;
 
 			return ValidateSharedBuildOutput(showDialogs, requireBuildOutput);
@@ -1272,8 +1308,8 @@ namespace SteamItchIoDeployer
 			if (requireCredentials && !ValidateSteamLogin(showDialogs))
 				return false;
 
-			if (requireBuildOutput && string.IsNullOrWhiteSpace(_steamConfig.BuildOutputPath))
-				return ShowValidationError(showDialogs, "Error", "Steam Build Output Path is not set.");
+			if (requireBuildOutput && string.IsNullOrWhiteSpace(_buildDeployConfig?.BuildOutputPath))
+				return ShowValidationError(showDialogs, "Error", "Shared Build Output Path is not set.");
 
 			string steamCmdDir = Path.GetDirectoryName(ResolveSteamCmdPath());
 			string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
@@ -1309,8 +1345,8 @@ namespace SteamItchIoDeployer
 			if (requireCredentials && string.IsNullOrWhiteSpace(GetEffectiveItchIoApiKey()))
 				return ShowValidationError(showDialogs, "Credentials Missing", "Please enter your itch.io BUTLER_API_KEY.");
 
-			if (requireBuildOutput && string.IsNullOrWhiteSpace(_itchIoConfig.BuildOutputPath))
-				return ShowValidationError(showDialogs, "Error", "itch.io Build Output Path is not set.");
+			if (requireBuildOutput && string.IsNullOrWhiteSpace(_buildDeployConfig?.BuildOutputPath))
+				return ShowValidationError(showDialogs, "Error", "Shared Build Output Path is not set.");
 
 			return true;
 		}
@@ -1319,23 +1355,12 @@ namespace SteamItchIoDeployer
 		{
 			if (!requireBuildOutput) return true;
 
+			if (_buildDeployConfig == null)
+				return ShowValidationError(showDialogs, "Error", "No Build/Deploy config asset is assigned.");
+
 			string resolvedPath = ResolveSelectedBuildOutputPath();
 			if (string.IsNullOrWhiteSpace(resolvedPath))
 				return ShowValidationError(showDialogs, "Error", "Build Output Path is not set for the selected targets.");
-
-			if ((_selectedTargets & DeployTargets.Steam) != 0 && !string.IsNullOrWhiteSpace(_steamConfig?.BuildOutputPath))
-			{
-				string steamPath = ResolveConfigPath(_steamConfig.BuildOutputPath);
-				if (!PathsEqual(steamPath, resolvedPath))
-					return ShowValidationError(showDialogs, "Error", "Selected targets must use the same Build Output Path.");
-			}
-
-			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && !string.IsNullOrWhiteSpace(_itchIoConfig?.BuildOutputPath))
-			{
-				string itchPath = ResolveConfigPath(_itchIoConfig.BuildOutputPath);
-				if (!PathsEqual(itchPath, resolvedPath))
-					return ShowValidationError(showDialogs, "Error", "Selected targets must use the same Build Output Path.");
-			}
 
 			return true;
 		}
@@ -1349,7 +1374,7 @@ namespace SteamItchIoDeployer
 
 		private bool EnsureBuildOutputPathForBuild()
 		{
-			if (_selectedTargets == DeployTargets.None)
+			if (GetSelectedTargets() == DeployTargets.None)
 			{
 				EditorUtility.DisplayDialog("Error", "No target platform selected.", "OK");
 				return false;
@@ -1362,22 +1387,15 @@ namespace SteamItchIoDeployer
 			if (string.IsNullOrEmpty(picked)) return false;
 
 			string normalized = NormalizeProjectRelativePath(picked);
-			ApplyBuildOutputPathToSelectedTargets(normalized);
+			ApplySharedBuildOutputPath(normalized);
 			return true;
 		}
 
-		private void ApplyBuildOutputPathToSelectedTargets(string path)
+		private void ApplySharedBuildOutputPath(string path)
 		{
-			if ((_selectedTargets & DeployTargets.Steam) != 0 && _steamConfig != null)
-			{
-				_steamConfig.BuildOutputPath = path;
-				SaveConfig(_steamConfig, false);
-			}
-			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && _itchIoConfig != null)
-			{
-				_itchIoConfig.BuildOutputPath = path;
-				SaveConfig(_itchIoConfig, false);
-			}
+			if (_buildDeployConfig == null) return;
+			_buildDeployConfig.BuildOutputPath = path;
+			SaveConfig(_buildDeployConfig, false);
 		}
 
 		private bool HasAnyBuildOutputPath()
@@ -1387,9 +1405,11 @@ namespace SteamItchIoDeployer
 
 		private bool CanBuildSelectedTargets()
 		{
-			if (_selectedTargets == DeployTargets.None) return false;
-			if ((_selectedTargets & DeployTargets.Steam) != 0 && _steamConfig == null) return false;
-			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && _itchIoConfig == null) return false;
+			DeployTargets selectedTargets = GetSelectedTargets();
+			if (selectedTargets == DeployTargets.None) return false;
+			if (_buildDeployConfig == null) return false;
+			if ((selectedTargets & DeployTargets.Steam) != 0 && _steamConfig == null) return false;
+			if ((selectedTargets & DeployTargets.ItchIo) != 0 && _itchIoConfig == null) return false;
 			return true;
 		}
 
@@ -1406,11 +1426,7 @@ namespace SteamItchIoDeployer
 
 		private string ResolveSelectedBuildOutputPath()
 		{
-			if ((_selectedTargets & DeployTargets.Steam) != 0 && !string.IsNullOrWhiteSpace(_steamConfig?.BuildOutputPath))
-				return ResolveConfigPath(_steamConfig.BuildOutputPath);
-			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && !string.IsNullOrWhiteSpace(_itchIoConfig?.BuildOutputPath))
-				return ResolveConfigPath(_itchIoConfig.BuildOutputPath);
-			return "";
+			return ResolveConfigPath(_buildDeployConfig?.BuildOutputPath);
 		}
 
 		private void PersistSavedCredentials()
@@ -1552,6 +1568,10 @@ namespace SteamItchIoDeployer
 
 		private void TryLoadConfigs()
 		{
+			string[] buildDeployGuids = AssetDatabase.FindAssets("t:BuildDeployConfig");
+			if (buildDeployGuids.Length > 0)
+				_buildDeployConfig = AssetDatabase.LoadAssetAtPath<BuildDeployConfig>(AssetDatabase.GUIDToAssetPath(buildDeployGuids[0]));
+
 			string[] steamGuids = AssetDatabase.FindAssets("t:SteamDeployConfig");
 			if (steamGuids.Length > 0)
 				_steamConfig = AssetDatabase.LoadAssetAtPath<SteamDeployConfig>(AssetDatabase.GUIDToAssetPath(steamGuids[0]));
@@ -1561,48 +1581,38 @@ namespace SteamItchIoDeployer
 				_itchIoConfig = AssetDatabase.LoadAssetAtPath<ItchIoDeployConfig>(AssetDatabase.GUIDToAssetPath(itchGuids[0]));
 		}
 
-		private void LoadSavedDeployTargets()
+		private void EnsureBuildDeployDefaults()
 		{
-			DeployTargets savedTargets = (DeployTargets)EditorPrefs.GetInt(DeployTargetsPrefsKey, (int)DeployTargets.Steam);
-			DeployTargets validTargets = savedTargets & (DeployTargets.Steam | DeployTargets.ItchIo);
-			_selectedTargets = validTargets;
-
-			if (_selectedTargets == DeployTargets.ItchIo)
+			DeployTargets selectedTargets = GetSelectedTargets();
+			if (selectedTargets == DeployTargets.ItchIo)
 				_selectedTab = PlatformTab.ItchIo;
 			else
 				_selectedTab = PlatformTab.Steam;
 		}
 
-	#if UNITY_6000_0_OR_NEWER
-		private void LoadSavedBuildProfile()
+		private void CreateBuildDeployConfigAsset()
 		{
-			string path = EditorPrefs.GetString(BuildProfilePrefsKey, "");
-			if (string.IsNullOrWhiteSpace(path))
-			{
-				_buildProfile = null;
-				return;
-			}
-
-			_buildProfile = AssetDatabase.LoadAssetAtPath<UnityEditor.Build.Profile.BuildProfile>(path);
-			if (_buildProfile == null)
-				EditorPrefs.DeleteKey(BuildProfilePrefsKey);
+			const string subFolder = "Assets/Editor/SteamItchIoDeployer";
+			EnsureEditorFolders(subFolder);
+			string path = $"{subFolder}/BuildDeployConfig.asset";
+			_buildDeployConfig = CreateInstance<BuildDeployConfig>();
+			AssetDatabase.CreateAsset(_buildDeployConfig, path);
+			AssetDatabase.SaveAssets();
+			EditorGUIUtility.PingObject(_buildDeployConfig);
+			EnsureBuildDeployDefaults();
 		}
 
-		private void SaveBuildProfilePreference()
+		private DeployTargets GetSelectedTargets()
 		{
-			if (_buildProfile == null)
-			{
-				EditorPrefs.DeleteKey(BuildProfilePrefsKey);
-				return;
-			}
-
-			string path = AssetDatabase.GetAssetPath(_buildProfile);
-			if (string.IsNullOrWhiteSpace(path))
-				EditorPrefs.DeleteKey(BuildProfilePrefsKey);
-			else
-				EditorPrefs.SetString(BuildProfilePrefsKey, path);
+			return _buildDeployConfig != null ? _buildDeployConfig.DeployTargets : DeployTargets.Steam;
 		}
-	#endif
+
+		private void SetSelectedTargets(DeployTargets targets)
+		{
+			if (_buildDeployConfig == null) return;
+			_buildDeployConfig.DeployTargets = targets & (DeployTargets.Steam | DeployTargets.ItchIo);
+			SaveConfig(_buildDeployConfig, refreshExecutables: false);
+		}
 
 		private void CreateSteamConfigAsset()
 		{

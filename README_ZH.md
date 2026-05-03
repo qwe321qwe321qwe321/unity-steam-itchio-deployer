@@ -12,14 +12,14 @@ Unity Editor 外掛程式，可在同一個 EditorWindow 內完成一次建置�
 
 - 多平台部署：可勾選 **Steam**、**itch.io**，或兩者同時。
 - 共用 **Build & Upload** 流程：Unity 只建置一次，再依序上傳到各平台。
-- 分離平台設定資產：`SteamDeployConfig` 與 `ItchIoDeployConfig`。
+- 分離共用與平台設定資產：`BuildDeployConfig`、`SteamDeployConfig`、`ItchIoDeployConfig`。
 - 中段 UI 以分頁切換各平台的設定與認證。
 - 下方 log console 為共用，可連續顯示 Steam 與 itch.io 的輸出。
 - Steam 透過 VDF + `steamcmd` 上傳。
 - itch.io 透過 `butler push` 上傳。
 - Steam Guard 驗證碼可在不中斷建置成果的情況下補輸入後續傳。
 - 憑證可用 AES-256 加密後儲存在 `EditorPrefs`。
-- 各平台可各自設定 `BuildOutputPath`，但若同時勾選上傳，必須指向同一路徑。
+- 共用的 deploy target、`BuildOutputPath` 與 Unity 6+ `BuildProfile` 會存於 `BuildDeployConfig`。
 
 ---
 
@@ -57,14 +57,25 @@ https://github.com/qwe321qwe321qwe321/unity-steam-itchio-deployer.git
 
 ### 1. 建立設定資產
 
-視窗可直接建立兩種設定資產：
+視窗可直接建立所有設定資產：
 
+- **Create Build/Deploy Config Asset**
 - **Create Steam Config Asset**
 - **Create itch.io Config Asset**
 
-兩者都不含敏感資訊，可提交至版本控制。
+這三個 asset 都不含敏感資訊，可提交至版本控制。
 
-### 2. 選擇部署平台
+### 2. 共用建置/部署設定
+
+`BuildDeployConfig` 包含：
+
+- `DeployTargets`
+- `BuildOutputPath`
+- Unity 6+ 的 `BuildProfile`
+
+這個 asset 會保存非機密的共用流程設定，因此 deploy target 與 build profile 不再放在 `EditorPrefs`。
+
+### 3. 選擇部署平台
 
 在視窗最上方勾選要部署的平台：
 
@@ -73,7 +84,7 @@ https://github.com/qwe321qwe321qwe321/unity-steam-itchio-deployer.git
 
 若同時勾選，工具會先建置一次，再依序上傳兩邊。
 
-### 3. Steam 設定
+### 4. Steam 設定
 
 `SteamDeployConfig` 包含：
 
@@ -84,7 +95,6 @@ https://github.com/qwe321qwe321qwe321/unity-steam-itchio-deployer.git
 - `BuildDescription`
 - `IgnoreFiles`
 - `SteamCmdPath`
-- `BuildOutputPath`
 
 Steam 分頁的認證欄位：
 
@@ -93,7 +103,7 @@ Steam 分頁的認證欄位：
 - 可選擇加密儲存到 `EditorPrefs`
 - `Test Steam Login`
 
-### 4. itch.io 設定
+### 5. itch.io 設定
 
 `ItchIoDeployConfig` 包含：
 
@@ -104,7 +114,6 @@ Steam 分頁的認證欄位：
 - `IgnoreFiles`
 - `Hidden`
 - `IfChanged`
-- `BuildOutputPath`
 
 itch.io 分頁的認證欄位：
 
@@ -115,7 +124,7 @@ itch.io 分頁的認證欄位：
 
 補充：部分 butler 版本並不支援 hidden channel 相關旗標。為了優先確保上傳成功，目前工具會保留 `Hidden` 欄位，但不強制在 upload 時傳入對應參數。
 
-### 5. `BUTLER_API_KEY` 去哪裡取得
+### 6. `BUTLER_API_KEY` 去哪裡取得
 
 可用下面方式取得：
 
@@ -131,9 +140,9 @@ itch.io 分頁的認證欄位：
 - Linux 路徑：`~/.config/itch/butler_creds`
 - API key 要當成密碼處理；若外流，請到 itch.io API keys 頁面撤銷後重建
 
-### 6. 共用 Build Output Path
+### 7. 共用 Build Output Path
 
-若 Steam 與 itch.io 同時勾選，兩者的 `BuildOutputPath` 必須一致。這樣才能符合「建一次、上傳兩邊」的使用方式。
+`BuildOutputPath` 現在放在 `BuildDeployConfig`，並由所有已選平台共用。這樣就能更直接符合「建一次、上傳 Steam 和/或 itch.io」的使用方式。
 
 ---
 
@@ -190,6 +199,7 @@ https://itch.io/docs/butler/installing.html
 
 ```text
 Editor/SteamItchIoDeployer/
+├── BuildDeployConfig.cs         共用建置/部署設定資產
 ├── SteamDeployConfig.cs        Steam 專用設定資產
 ├── ItchIoDeployConfig.cs       itch.io 專用設定資產
 ├── CryptographyHelper.cs       AES-256 加解密、EditorPrefs 密文管理

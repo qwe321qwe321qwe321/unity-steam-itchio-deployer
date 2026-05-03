@@ -9,9 +9,6 @@ namespace SteamItchIoDeployer
 	[CreateAssetMenu(fileName = "ItchIoDeployConfig", menuName = "Steam itch.io Deployer/itch.io Deploy Config")]
 	public class ItchIoDeployConfig : ScriptableObject
 	{
-		[Tooltip("Absolute or project-relative path to the directory where Unity outputs the build.")]
-		public string BuildOutputPath = "";
-
 		[Tooltip("Absolute filesystem path to the butler executable on this machine.")]
 		public string ButlerPath = "";
 
