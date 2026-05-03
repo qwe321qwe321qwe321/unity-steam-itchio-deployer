@@ -13,7 +13,7 @@ namespace SteamItchIoDeployer
 
 	/// <summary>
 	/// ScriptableObject asset that stores shared, non-sensitive build and deployment settings.
-	/// Credentials stay in EditorPrefs so this asset is safe to commit.
+	/// Credentials stay in project-scoped EditorPrefs on the local machine so this asset is safe to commit.
 	/// </summary>
 	[CreateAssetMenu(fileName = "BuildDeployConfig", menuName = "Steam itch.io Deployer/Build Deploy Config")]
 	public class BuildDeployConfig : ScriptableObject

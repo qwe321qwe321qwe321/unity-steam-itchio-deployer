@@ -4,7 +4,7 @@ namespace SteamItchIoDeployer
 {
 	/// <summary>
 	/// ScriptableObject asset that stores all non-sensitive itch.io deployment configuration.
-	/// Sensitive auth is stored separately in EditorPrefs.
+	/// Sensitive auth is stored separately in project-scoped EditorPrefs on the local machine.
 	/// </summary>
 	[CreateAssetMenu(fileName = "ItchIoDeployConfig", menuName = "Steam itch.io Deployer/itch.io Deploy Config")]
 	public class ItchIoDeployConfig : ScriptableObject

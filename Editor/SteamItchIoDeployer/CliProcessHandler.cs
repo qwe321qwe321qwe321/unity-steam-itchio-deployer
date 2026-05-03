@@ -2,7 +2,11 @@ using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
@@ -39,8 +43,12 @@ namespace SteamItchIoDeployer
 		private readonly CliToolKind _toolKind;
 		private volatile bool _hasExited;
 		private int _exitCode = -1;
+		private int _pendingReaderCount;
+		private bool _exitNotified;
 
 		private Process _process;
+		private Task _stdoutReaderTask;
+		private Task _stderrReaderTask;
 		private bool _disposed;
 
 		public event Action<string> OnLogLine;
@@ -181,8 +189,6 @@ namespace SteamItchIoDeployer
 				EnableRaisingEvents = true,
 			};
 
-			_process.OutputDataReceived += HandleOutputData;
-			_process.ErrorDataReceived  += HandleErrorData;
 			_process.Exited             += HandleProcessExited;
 
 			try
@@ -194,8 +200,11 @@ namespace SteamItchIoDeployer
 					return false;
 				}
 
-				_process.BeginOutputReadLine();
-				_process.BeginErrorReadLine();
+				_pendingReaderCount = 2;
+				_hasExited = false;
+				_exitNotified = false;
+				_stdoutReaderTask = Task.Run(() => PumpReader(_process.StandardOutput, fromStdErr: false));
+				_stderrReaderTask = Task.Run(() => PumpReader(_process.StandardError, fromStdErr: true));
 
 				return true;
 			}
@@ -229,8 +238,9 @@ namespace SteamItchIoDeployer
 				}
 			}
 
-			if (_hasExited)
+			if (_hasExited && Volatile.Read(ref _pendingReaderCount) == 0 && !_exitNotified)
 			{
+				_exitNotified = true;
 				OnProcessExited?.Invoke(_exitCode);
 				return true;
 			}
@@ -254,22 +264,67 @@ namespace SteamItchIoDeployer
 			}
 		}
 
-		private void HandleOutputData(object sender, DataReceivedEventArgs e)
+		private void PumpReader(StreamReader reader, bool fromStdErr)
 		{
-			if (e.Data == null) return;
-			_logQueue.Enqueue(new LogEntry(e.Data, ClassifyLogLine(e.Data, fromStdErr: false)));
-		}
+			var buffer = new StringBuilder();
+			bool previousWasCarriageReturn = false;
 
-		private void HandleErrorData(object sender, DataReceivedEventArgs e)
-		{
-			if (e.Data == null) return;
-			_logQueue.Enqueue(new LogEntry(e.Data, ClassifyLogLine(e.Data, fromStdErr: true)));
+			try
+			{
+				while (true)
+				{
+					int next = reader.Read();
+					if (next < 0)
+						break;
+
+					char ch = (char)next;
+					if (ch == '\r' || ch == '\n')
+					{
+						if (ch == '\n' && previousWasCarriageReturn)
+						{
+							previousWasCarriageReturn = false;
+							continue;
+						}
+
+						EnqueueBufferedLine(buffer, fromStdErr);
+						previousWasCarriageReturn = ch == '\r';
+						continue;
+					}
+
+					buffer.Append(ch);
+					previousWasCarriageReturn = false;
+				}
+
+				EnqueueBufferedLine(buffer, fromStdErr);
+			}
+			catch (ObjectDisposedException)
+			{
+				// Process shutdown can dispose the redirected stream while the reader is still active.
+			}
+			catch (InvalidOperationException)
+			{
+				// The process can close its streams during termination; ignore and let exit handling continue.
+			}
+			finally
+			{
+				Interlocked.Decrement(ref _pendingReaderCount);
+			}
 		}
 
 		private void HandleProcessExited(object sender, EventArgs e)
 		{
 			_exitCode  = _process?.ExitCode ?? -1;
 			_hasExited = true;
+		}
+
+		private void EnqueueBufferedLine(StringBuilder buffer, bool fromStdErr)
+		{
+			if (buffer.Length == 0)
+				return;
+
+			string line = buffer.ToString();
+			buffer.Clear();
+			_logQueue.Enqueue(new LogEntry(line, ClassifyLogLine(line, fromStdErr)));
 		}
 
 		private LogLevel ClassifyLogLine(string line, bool fromStdErr)
@@ -304,8 +359,6 @@ namespace SteamItchIoDeployer
 
 			if (_process != null)
 			{
-				_process.OutputDataReceived -= HandleOutputData;
-				_process.ErrorDataReceived  -= HandleErrorData;
 				_process.Exited             -= HandleProcessExited;
 				_process.Dispose();
 				_process = null;

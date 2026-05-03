@@ -4,7 +4,9 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
@@ -31,7 +33,15 @@ namespace SteamItchIoDeployer
 			ItchIo,
 		}
 
+		private enum LogTab
+		{
+			General,
+			Steam,
+			ItchIo,
+		}
+
 		private const string SteamUsernamePrefsKey = "SteamDeployer_Username";
+		private const string SteamPasswordCipherPrefsKey = "SteamDeployer_EncryptedPassword";
 		private const string ItchIoSaveApiKeyPrefsKey = "SteamDeployer_ItchioSaveApiKey";
 		private const string ItchIoApiKeyCipherPrefsKey = "SteamDeployer_EncryptedItchioApiKey";
 		private const int MaxLogBufferChars = 60_000;
@@ -69,8 +79,13 @@ namespace SteamItchIoDeployer
 		private CliProcessHandler _processHandler;
 		private bool _isProcessRunning;
 
-		private string _logBuffer = "";
-		private Vector2 _logScroll;
+		private string _generalLogBuffer = "";
+		private string _steamLogBuffer = "";
+		private string _itchIoLogBuffer = "";
+		private Vector2 _generalLogScroll;
+		private Vector2 _steamLogScroll;
+		private Vector2 _itchIoLogScroll;
+		private LogTab _selectedLogTab = LogTab.General;
 		private Vector2 _mainScroll;
 
 		private GUIStyle _boxStyle;
@@ -95,16 +110,16 @@ namespace SteamItchIoDeployer
 			RefreshExecutableExists();
 			EnsureBuildDeployDefaults();
 
-			_steamUsername = EditorPrefs.GetString(SteamUsernamePrefsKey, "");
-			if (CryptographyHelper.HasStoredPassword())
+			_steamUsername = EditorPrefs.GetString(GetProjectScopedPrefsKey(SteamUsernamePrefsKey), "");
+			if (CryptographyHelper.HasStoredValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey)))
 			{
-				_steamPassword = CryptographyHelper.LoadDecryptedPassword() ?? "";
+				_steamPassword = CryptographyHelper.LoadDecryptedValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey)) ?? "";
 				_saveSteamCredentials = true;
 			}
 
-			_saveItchIoApiKey = EditorPrefs.GetBool(ItchIoSaveApiKeyPrefsKey, false);
-			if (CryptographyHelper.HasStoredValue(ItchIoApiKeyCipherPrefsKey))
-				_itchIoApiKey = CryptographyHelper.LoadDecryptedValue(ItchIoApiKeyCipherPrefsKey) ?? "";
+			_saveItchIoApiKey = EditorPrefs.GetBool(GetProjectScopedPrefsKey(ItchIoSaveApiKeyPrefsKey), false);
+			if (CryptographyHelper.HasStoredValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey)))
+				_itchIoApiKey = CryptographyHelper.LoadDecryptedValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey)) ?? "";
 
 			bool steamAuthReady = !string.IsNullOrWhiteSpace(_steamUsername) && !string.IsNullOrWhiteSpace(_steamPassword);
 			bool itchAuthReady = !string.IsNullOrWhiteSpace(_itchIoApiKey);
@@ -145,8 +160,9 @@ namespace SteamItchIoDeployer
 		{
 			if (!_isProcessRunning || _processHandler == null) return;
 
+			CliProcessHandler activeHandler = _processHandler;
 			bool done = _processHandler.PumpMainThread();
-			if (done)
+			if (done && ReferenceEquals(_processHandler, activeHandler))
 				_isProcessRunning = false;
 
 			Repaint();
@@ -312,17 +328,17 @@ namespace SteamItchIoDeployer
 			{
 				_steamUsername = EditorGUILayout.TextField("Steam Username", _steamUsername);
 				if (check.changed)
-					EditorPrefs.SetString(SteamUsernamePrefsKey, _steamUsername);
+					EditorPrefs.SetString(GetProjectScopedPrefsKey(SteamUsernamePrefsKey), _steamUsername);
 			}
 
 			_steamPassword = EditorGUILayout.PasswordField("Password", _steamPassword);
 			EditorGUILayout.Space(4);
 
 			bool prevSave = _saveSteamCredentials;
-			_saveSteamCredentials = EditorGUILayout.Toggle(new GUIContent("Save credentials (AES-256)", "Encrypts the Steam password using your machine identity and stores it in EditorPrefs."), _saveSteamCredentials);
+			_saveSteamCredentials = EditorGUILayout.Toggle(new GUIContent("Save credentials (AES-256)", "Encrypts the Steam password using your machine identity and stores it in EditorPrefs for this project only."), _saveSteamCredentials);
 
 			if (prevSave && !_saveSteamCredentials)
-				CryptographyHelper.ClearStoredPassword();
+				CryptographyHelper.ClearStoredValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey));
 
 			if (_saveSteamCredentials)
 			{
@@ -331,15 +347,15 @@ namespace SteamItchIoDeployer
 					GUILayout.FlexibleSpace();
 					if (GUILayout.Button("Save Now", GUILayout.Width(100)))
 					{
-						CryptographyHelper.SaveEncryptedPassword(_steamPassword);
-						EditorUtility.DisplayDialog("Saved", "Steam password encrypted and stored in EditorPrefs.", "OK");
+						CryptographyHelper.SaveEncryptedValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey), _steamPassword);
+						EditorUtility.DisplayDialog("Saved", "Steam password encrypted and stored in EditorPrefs for this project.", "OK");
 					}
 					if (GUILayout.Button("Clear Saved", GUILayout.Width(100)))
-						CryptographyHelper.ClearStoredPassword();
+						CryptographyHelper.ClearStoredValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey));
 				}
 
-				if (CryptographyHelper.HasStoredPassword())
-					EditorGUILayout.HelpBox("Encrypted Steam password stored for this machine.", MessageType.Info);
+				if (CryptographyHelper.HasStoredValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey)))
+					EditorGUILayout.HelpBox("Encrypted Steam password stored for this project on this machine.", MessageType.Info);
 			}
 
 			EditorGUILayout.Space(6);
@@ -373,11 +389,11 @@ namespace SteamItchIoDeployer
 			EditorGUILayout.Space(4);
 
 			bool prevSave = _saveItchIoApiKey;
-			_saveItchIoApiKey = EditorGUILayout.Toggle(new GUIContent("Save API key (AES-256)", "Encrypts the itch.io API key and stores it in EditorPrefs."), _saveItchIoApiKey);
-			EditorPrefs.SetBool(ItchIoSaveApiKeyPrefsKey, _saveItchIoApiKey);
+			_saveItchIoApiKey = EditorGUILayout.Toggle(new GUIContent("Save API key (AES-256)", "Encrypts the itch.io API key and stores it in EditorPrefs for this project only."), _saveItchIoApiKey);
+			EditorPrefs.SetBool(GetProjectScopedPrefsKey(ItchIoSaveApiKeyPrefsKey), _saveItchIoApiKey);
 
 			if (prevSave && !_saveItchIoApiKey)
-				CryptographyHelper.ClearStoredValue(ItchIoApiKeyCipherPrefsKey);
+				CryptographyHelper.ClearStoredValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey));
 
 			if (_saveItchIoApiKey)
 			{
@@ -386,15 +402,15 @@ namespace SteamItchIoDeployer
 					GUILayout.FlexibleSpace();
 					if (GUILayout.Button("Save Now", GUILayout.Width(100)))
 					{
-						CryptographyHelper.SaveEncryptedValue(ItchIoApiKeyCipherPrefsKey, _itchIoApiKey);
-						EditorUtility.DisplayDialog("Saved", "itch.io API key encrypted and stored in EditorPrefs.", "OK");
+						CryptographyHelper.SaveEncryptedValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey), GetCurrentItchIoApiKeyInput());
+						EditorUtility.DisplayDialog("Saved", "itch.io API key encrypted and stored in EditorPrefs for this project.", "OK");
 					}
 					if (GUILayout.Button("Clear Saved", GUILayout.Width(100)))
-						CryptographyHelper.ClearStoredValue(ItchIoApiKeyCipherPrefsKey);
+						CryptographyHelper.ClearStoredValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey));
 				}
 
-				if (CryptographyHelper.HasStoredValue(ItchIoApiKeyCipherPrefsKey))
-					EditorGUILayout.HelpBox("Encrypted itch.io API key stored for this machine.", MessageType.Info);
+				if (CryptographyHelper.HasStoredValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey)))
+					EditorGUILayout.HelpBox("Encrypted itch.io API key stored for this project on this machine.", MessageType.Info);
 			}
 		}
 
@@ -837,23 +853,28 @@ namespace SteamItchIoDeployer
 
 		private void DrawLogSection()
 		{
-			if (string.IsNullOrEmpty(_logBuffer)) return;
+			if (string.IsNullOrEmpty(_generalLogBuffer) && string.IsNullOrEmpty(_steamLogBuffer) && string.IsNullOrEmpty(_itchIoLogBuffer))
+				return;
 
 			using (new GUILayout.VerticalScope(_boxStyle))
 			{
 				using (new GUILayout.HorizontalScope())
 				{
 					EditorGUILayout.LabelField("Deployment Output", EditorStyles.boldLabel);
+					GUILayout.Space(8);
+					_selectedLogTab = (LogTab)GUILayout.Toolbar((int)_selectedLogTab, new[] { "General", "Steam", "itch.io" }, EditorStyles.toolbarButton, GUILayout.Width(220));
 					GUILayout.FlexibleSpace();
 					if (GUILayout.Button("Clear", GUILayout.Width(56)))
-						_logBuffer = "";
+						ClearSelectedLogBuffer();
 					if (GUILayout.Button("Open Editor.log", GUILayout.Width(110)))
 						RevealEditorLog();
 				}
 
-				_logScroll = EditorGUILayout.BeginScrollView(_logScroll, GUILayout.Height(220));
-				EditorGUILayout.TextArea(_logBuffer, _logStyle, GUILayout.ExpandHeight(true));
+				Vector2 scroll = GetSelectedLogScroll();
+				scroll = EditorGUILayout.BeginScrollView(scroll, GUILayout.Height(220));
+				EditorGUILayout.TextArea(GetSelectedLogBuffer(), _logStyle, GUILayout.ExpandHeight(true));
 				EditorGUILayout.EndScrollView();
+				SetSelectedLogScroll(scroll);
 			}
 			EditorGUILayout.Space(3);
 		}
@@ -862,13 +883,14 @@ namespace SteamItchIoDeployer
 		{
 			if (!ValidateSteamLogin(showDialogs: true)) return;
 
-			_logBuffer = "";
+			ClearAllLogBuffers();
+			_selectedLogTab = LogTab.Steam;
 			_isTestLoginContext = true;
 			_steamGuardCodeInput = "";
 			_pendingUploads.Clear();
 
 			if (_saveSteamCredentials && !string.IsNullOrEmpty(_steamPassword))
-				CryptographyHelper.SaveEncryptedPassword(_steamPassword);
+				CryptographyHelper.SaveEncryptedValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey), _steamPassword);
 
 			LaunchSteamTestLogin("");
 		}
@@ -882,7 +904,7 @@ namespace SteamItchIoDeployer
 			_state = DeployState.TestingLogin;
 			_taskLabel = "Testing Steam login...";
 			_progressValue = 0.5f;
-			AppendLog("[Steam] Testing login", false);
+			AppendPlatformLog(DeployTargets.Steam, "Testing login", false);
 			_isProcessRunning = true;
 
 			if (!_processHandler.Start(ResolveSteamCmdPath(), args))
@@ -896,7 +918,8 @@ namespace SteamItchIoDeployer
 		{
 			if (!EnsureBuildOutputPathForBuild()) return;
 
-			_logBuffer = "";
+			ClearAllLogBuffers();
+			_selectedLogTab = LogTab.General;
 			_progressValue = 0.05f;
 			_taskLabel = "Preparing build...";
 			_state = DeployState.Building;
@@ -923,7 +946,8 @@ namespace SteamItchIoDeployer
 				return;
 			}
 
-			_logBuffer = "";
+			ClearAllLogBuffers();
+			_selectedLogTab = LogTab.General;
 			PrepareUploadSequence();
 			_taskLabel = "Preparing uploads...";
 			_progressValue = 0.6f;
@@ -936,7 +960,8 @@ namespace SteamItchIoDeployer
 		{
 			if (!ValidateSelectedTargetsForUpload(showDialogs: true, requireCredentials: true, requireBuildOutput: true)) return;
 
-			_logBuffer = "";
+			ClearAllLogBuffers();
+			_selectedLogTab = LogTab.General;
 			_isTestLoginContext = false;
 			_steamGuardCodeInput = "";
 			_state = DeployState.Building;
@@ -982,16 +1007,22 @@ namespace SteamItchIoDeployer
 				_state = DeployState.Success;
 				_progressValue = 1f;
 				_taskLabel = "All uploads complete!";
-				AppendLog("=== ALL SELECTED UPLOADS COMPLETED ===", false);
+				AppendGeneralLog("=== ALL SELECTED UPLOADS COMPLETED ===", false);
 				Repaint();
 				return;
 			}
 
 			DeployTargets nextTarget = _pendingUploads.Peek();
 			if (nextTarget == DeployTargets.Steam)
+			{
+				_selectedLogTab = LogTab.Steam;
 				LaunchSteamUpload("");
+			}
 			else
+			{
+				_selectedLogTab = LogTab.ItchIo;
 				LaunchItchIoUpload();
+			}
 		}
 
 		private void LaunchSteamUpload(string steamGuardCode)
@@ -1003,11 +1034,11 @@ namespace SteamItchIoDeployer
 			{
 				string desc = ResolveMacros(_steamConfig.BuildDescription);
 				appVdfPath = VDFGenerator.GenerateVdfScripts(_steamConfig, buildOutputPath, desc, ResolveSteamCmdPath());
-				AppendLog($"[Steam] VDF scripts written. App VDF: {appVdfPath}", false);
+				AppendPlatformLog(DeployTargets.Steam, $"VDF scripts written. App VDF: {appVdfPath}", false);
 			}
 			catch (Exception ex)
 			{
-				AppendLog($"[Steam] VDF generation failed: {ex.Message}", true);
+				AppendPlatformLog(DeployTargets.Steam, $"VDF generation failed: {ex.Message}", true);
 				SetFailedState("Steam VDF generation failed.");
 				return;
 			}
@@ -1021,7 +1052,7 @@ namespace SteamItchIoDeployer
 			_state = DeployState.Uploading;
 			_isProcessRunning = true;
 
-			AppendLog($"[Steam] Launching: {ResolveSteamCmdPath()}", false);
+			AppendPlatformLog(DeployTargets.Steam, $"Launching: {ResolveSteamCmdPath()}", false);
 			if (!_processHandler.Start(ResolveSteamCmdPath(), args))
 			{
 				_isProcessRunning = false;
@@ -1054,8 +1085,8 @@ namespace SteamItchIoDeployer
 				["BUTLER_API_KEY"] = GetEffectiveItchIoApiKey(),
 			};
 
-			AppendLog($"[itch.io] Launching: {ResolveButlerPath()}", false);
-			AppendLog($"[itch.io] Target: {_itchIoConfig.Target}:{_itchIoConfig.Channel}", false);
+			AppendPlatformLog(DeployTargets.ItchIo, $"Launching: {ResolveButlerPath()}", false);
+			AppendPlatformLog(DeployTargets.ItchIo, $"Target: {_itchIoConfig.Target}:{_itchIoConfig.Channel}", false);
 			if (!_processHandler.Start(ResolveButlerPath(), args, env))
 			{
 				_isProcessRunning = false;
@@ -1080,7 +1111,7 @@ namespace SteamItchIoDeployer
 			{
 				try { Directory.Delete(tempOutputPath, true); } catch { }
 				string detail = report != null ? $"Result={report.summary.result}, Errors={report.summary.totalErrors}" : "BuildReport was null (build may have been cancelled).";
-				AppendLog($"BUILD FAILED: {detail}", true);
+				AppendGeneralLog($"BUILD FAILED: {detail}", true);
 				Debug.LogError($"[SteamItchIoDeployer] Unity build FAILED — {detail}.");
 				failureReason = "Build failed.";
 				return false;
@@ -1090,7 +1121,7 @@ namespace SteamItchIoDeployer
 				Directory.Delete(buildOutputPath, true);
 			Directory.Move(tempOutputPath, buildOutputPath);
 
-			AppendLog($"Build succeeded -> {buildOutputPath}", false);
+			AppendGeneralLog($"Build succeeded -> {buildOutputPath}", false);
 			Debug.Log($"[SteamItchIoDeployer] Unity build succeeded. Output: {buildOutputPath}");
 			return true;
 		}
@@ -1196,12 +1227,12 @@ namespace SteamItchIoDeployer
 					_state = DeployState.Success;
 					_progressValue = 1f;
 					_taskLabel = "Login successful!";
-					AppendLog("=== LOGIN TEST SUCCESSFUL ===", false);
+					AppendPlatformLog(DeployTargets.Steam, "=== LOGIN TEST SUCCESSFUL ===", false);
 					return;
 				}
 
 				DeployTargets finishedTarget = _pendingUploads.Count > 0 ? _pendingUploads.Dequeue() : DeployTargets.None;
-				AppendLog(finishedTarget == DeployTargets.Steam ? "=== STEAM UPLOAD SUCCESSFUL ===" : "=== ITCH.IO UPLOAD SUCCESSFUL ===", false);
+				AppendPlatformLog(finishedTarget, finishedTarget == DeployTargets.Steam ? "=== STEAM UPLOAD SUCCESSFUL ===" : "=== ITCH.IO UPLOAD SUCCESSFUL ===", false);
 				LaunchNextUploadTarget();
 				return;
 			}
@@ -1209,21 +1240,21 @@ namespace SteamItchIoDeployer
 			if (_isTestLoginContext)
 			{
 				SetFailedState($"Login test failed (exit code {exitCode}).");
-				AppendLog($"=== LOGIN TEST FAILED (exit code {exitCode}) ===", true);
-				AppendLog($"Exit code {exitCode}: {CliProcessHandler.DescribeSteamExitCode(exitCode)}", true);
+				AppendPlatformLog(DeployTargets.Steam, $"=== LOGIN TEST FAILED (exit code {exitCode}) ===", true);
+				AppendPlatformLog(DeployTargets.Steam, $"Exit code {exitCode}: {CliProcessHandler.DescribeSteamExitCode(exitCode)}", true);
 				return;
 			}
 
 			if (_activeToolKind == CliProcessHandler.CliToolKind.SteamCmd)
 			{
 				SetFailedState($"SteamCMD exited with code {exitCode}.");
-				AppendLog($"=== STEAM UPLOAD FAILED (exit code {exitCode}) ===", true);
-				AppendLog($"Exit code {exitCode}: {CliProcessHandler.DescribeSteamExitCode(exitCode)}", true);
+				AppendPlatformLog(DeployTargets.Steam, $"=== STEAM UPLOAD FAILED (exit code {exitCode}) ===", true);
+				AppendPlatformLog(DeployTargets.Steam, $"Exit code {exitCode}: {CliProcessHandler.DescribeSteamExitCode(exitCode)}", true);
 			}
 			else
 			{
 				SetFailedState($"butler exited with code {exitCode}.");
-				AppendLog($"=== ITCH.IO UPLOAD FAILED (exit code {exitCode}) ===", true);
+				AppendPlatformLog(DeployTargets.ItchIo, $"=== ITCH.IO UPLOAD FAILED (exit code {exitCode}) ===", true);
 			}
 		}
 
@@ -1234,7 +1265,7 @@ namespace SteamItchIoDeployer
 			_processHandler = null;
 			_isProcessRunning = false;
 
-			AppendLog($"[Steam] Steam Guard code required: {message}", false);
+			AppendPlatformLog(DeployTargets.Steam, $"Steam Guard code required: {message}", false);
 			_state = DeployState.WaitingForSteamGuard;
 			_steamGuardCodeInput = "";
 			GUIUtility.keyboardControl = 0;
@@ -1248,7 +1279,7 @@ namespace SteamItchIoDeployer
 			_processHandler = null;
 			_isProcessRunning = false;
 
-			AppendLog($"AUTH FAILURE: {message}", true);
+			AppendLogForTool(_activeToolKind, $"AUTH FAILURE: {message}", true);
 			SetFailedState("Authentication failed.");
 			Repaint();
 
@@ -1265,14 +1296,14 @@ namespace SteamItchIoDeployer
 			_pendingUploads.Clear();
 			_state = DeployState.Setup;
 			_taskLabel = "";
-			AppendLog("Operation was manually cancelled.", true);
+			AppendGeneralLog("Operation was manually cancelled.", true);
 		}
 
 		private CliProcessHandler CreateAndWireProcessHandler(CliProcessHandler.CliToolKind toolKind)
 		{
 			var handler = new CliProcessHandler(toolKind);
-			handler.OnLogLine += line => AppendLog(line, false);
-			handler.OnErrorLine += line => AppendLog(line, true);
+			handler.OnLogLine += line => AppendLogForTool(toolKind, line, false);
+			handler.OnErrorLine += line => AppendLogForTool(toolKind, line, true);
 			handler.OnSteamGuardRequired += HandleSteamGuardRequired;
 			handler.OnAuthenticationFailure += HandleAuthFailure;
 			handler.OnProcessExited += HandleProcessExited;
@@ -1432,19 +1463,47 @@ namespace SteamItchIoDeployer
 		private void PersistSavedCredentials()
 		{
 			if (_saveSteamCredentials && !string.IsNullOrEmpty(_steamPassword))
-				CryptographyHelper.SaveEncryptedPassword(_steamPassword);
-			if (_saveItchIoApiKey && !string.IsNullOrEmpty(_itchIoApiKey))
-				CryptographyHelper.SaveEncryptedValue(ItchIoApiKeyCipherPrefsKey, _itchIoApiKey);
+				CryptographyHelper.SaveEncryptedValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey), _steamPassword);
+
+			string itchIoApiKey = GetCurrentItchIoApiKeyInput();
+			if (_saveItchIoApiKey && !string.IsNullOrEmpty(itchIoApiKey))
+				CryptographyHelper.SaveEncryptedValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey), itchIoApiKey);
 		}
 
 		private string GetEffectiveSteamPassword()
 		{
-			return _saveSteamCredentials ? (CryptographyHelper.LoadDecryptedPassword() ?? _steamPassword) : _steamPassword;
+			return _saveSteamCredentials ? (CryptographyHelper.LoadDecryptedValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey)) ?? _steamPassword) : _steamPassword;
 		}
 
 		private string GetEffectiveItchIoApiKey()
 		{
-			return _saveItchIoApiKey ? (CryptographyHelper.LoadDecryptedValue(ItchIoApiKeyCipherPrefsKey) ?? _itchIoApiKey) : _itchIoApiKey;
+			string currentInput = GetCurrentItchIoApiKeyInput();
+			if (!string.IsNullOrEmpty(currentInput))
+				return currentInput;
+
+			if (!_saveItchIoApiKey)
+				return currentInput;
+
+			return CryptographyHelper.LoadDecryptedValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey))?.Trim();
+		}
+
+		private string GetCurrentItchIoApiKeyInput()
+		{
+			return _itchIoApiKey?.Trim();
+		}
+
+		private static string GetProjectScopedPrefsKey(string baseKey)
+		{
+			if (string.IsNullOrWhiteSpace(baseKey))
+				return baseKey;
+
+			string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+			using (var sha256 = SHA256.Create())
+			{
+				byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(projectRoot));
+				string projectHash = BitConverter.ToString(hashBytes).Replace("-", "").Substring(0, 16);
+				return $"{baseKey}_{projectHash}";
+			}
 		}
 
 		private void RefreshExecutableExists()
@@ -1542,21 +1601,121 @@ namespace SteamItchIoDeployer
 				EditorUtility.DisplayDialog("Not Found", $"Editor log not found at:\n{path}", "OK");
 		}
 
-		private void AppendLog(string line, bool isError)
+		private void AppendGeneralLog(string line, bool isError)
+		{
+			AppendLog(ref _generalLogBuffer, ref _generalLogScroll, line, isError);
+		}
+
+		private void AppendPlatformLog(DeployTargets target, string line, bool isError)
+		{
+			if (target == DeployTargets.Steam)
+			{
+				AppendLog(ref _steamLogBuffer, ref _steamLogScroll, line, isError);
+				return;
+			}
+
+			if (target == DeployTargets.ItchIo)
+			{
+				AppendLog(ref _itchIoLogBuffer, ref _itchIoLogScroll, line, isError);
+				return;
+			}
+
+			AppendGeneralLog(line, isError);
+		}
+
+		private void AppendLogForTool(CliProcessHandler.CliToolKind toolKind, string line, bool isError)
+		{
+			if (toolKind == CliProcessHandler.CliToolKind.SteamCmd)
+			{
+				AppendPlatformLog(DeployTargets.Steam, line, isError);
+				return;
+			}
+
+			if (toolKind == CliProcessHandler.CliToolKind.Butler)
+			{
+				AppendPlatformLog(DeployTargets.ItchIo, line, isError);
+				return;
+			}
+
+			AppendGeneralLog(line, isError);
+		}
+
+		private static void AppendLog(ref string buffer, ref Vector2 scroll, string line, bool isError)
 		{
 			string ts = DateTime.Now.ToString("HH:mm:ss");
 			string tag = isError ? "ERR" : "LOG";
 			string entry = $"[{ts}][{tag}] {line}\n";
-			_logBuffer += entry;
+			buffer += entry;
 
-			if (_logBuffer.Length > MaxLogBufferChars)
+			if (buffer.Length > MaxLogBufferChars)
 			{
-				int cutAt = _logBuffer.Length - MaxLogBufferChars;
-				int nl = _logBuffer.IndexOf('\n', cutAt);
-				_logBuffer = nl >= 0 ? _logBuffer.Substring(nl + 1) : _logBuffer.Substring(cutAt);
+				int cutAt = buffer.Length - MaxLogBufferChars;
+				int nl = buffer.IndexOf('\n', cutAt);
+				buffer = nl >= 0 ? buffer.Substring(nl + 1) : buffer.Substring(cutAt);
 			}
 
-			_logScroll = new Vector2(0, float.MaxValue);
+			scroll = new Vector2(0, float.MaxValue);
+		}
+
+		private string GetSelectedLogBuffer()
+		{
+			if (_selectedLogTab == LogTab.Steam) return _steamLogBuffer;
+			if (_selectedLogTab == LogTab.ItchIo) return _itchIoLogBuffer;
+			return _generalLogBuffer;
+		}
+
+		private Vector2 GetSelectedLogScroll()
+		{
+			if (_selectedLogTab == LogTab.Steam) return _steamLogScroll;
+			if (_selectedLogTab == LogTab.ItchIo) return _itchIoLogScroll;
+			return _generalLogScroll;
+		}
+
+		private void SetSelectedLogScroll(Vector2 scroll)
+		{
+			if (_selectedLogTab == LogTab.Steam)
+			{
+				_steamLogScroll = scroll;
+				return;
+			}
+
+			if (_selectedLogTab == LogTab.ItchIo)
+			{
+				_itchIoLogScroll = scroll;
+				return;
+			}
+
+			_generalLogScroll = scroll;
+		}
+
+		private void ClearSelectedLogBuffer()
+		{
+			if (_selectedLogTab == LogTab.Steam)
+			{
+				_steamLogBuffer = "";
+				_steamLogScroll = Vector2.zero;
+				return;
+			}
+
+			if (_selectedLogTab == LogTab.ItchIo)
+			{
+				_itchIoLogBuffer = "";
+				_itchIoLogScroll = Vector2.zero;
+				return;
+			}
+
+			_generalLogBuffer = "";
+			_generalLogScroll = Vector2.zero;
+		}
+
+		private void ClearAllLogBuffers()
+		{
+			_generalLogBuffer = "";
+			_steamLogBuffer = "";
+			_itchIoLogBuffer = "";
+			_generalLogScroll = Vector2.zero;
+			_steamLogScroll = Vector2.zero;
+			_itchIoLogScroll = Vector2.zero;
 		}
 
 		private void SetFailedState(string reason)
@@ -1757,7 +1916,7 @@ namespace SteamItchIoDeployer
 
 					_steamConfig.SteamCmdPath = NormalizeProjectRelativePath(steamCmdExePath.Replace('\\', '/'));
 					SaveConfig(_steamConfig, true);
-					AppendLog($"SteamCMD installed -> {steamCmdDir}", false);
+					AppendPlatformLog(DeployTargets.Steam, $"SteamCMD installed -> {steamCmdDir}", false);
 					System.Diagnostics.Process.Start(steamCmdExePath);
 				};
 			});
@@ -1836,7 +1995,7 @@ namespace SteamItchIoDeployer
 
 					_itchIoConfig.ButlerPath = NormalizeProjectRelativePath(butlerExePath.Replace('\\', '/'));
 					SaveConfig(_itchIoConfig, true);
-					AppendLog($"butler installed -> {butlerDir}", false);
+					AppendPlatformLog(DeployTargets.ItchIo, $"butler installed -> {butlerDir}", false);
 				};
 			});
 		}
