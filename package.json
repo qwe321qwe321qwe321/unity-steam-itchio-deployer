@@ -1,8 +1,8 @@
 {
-  "name": "com.steamdeployer.unity",
-  "version": "1.0.0",
-  "displayName": "Steam Deployer",
-  "description": "Unity Editor tool that builds and uploads to Steam via SteamCMD. Generates VDF scripts dynamically, encrypts credentials with AES-256, and runs SteamCMD asynchronously without blocking the Editor.",
+  "name": "com.pedev.unity-steam-itchio-deployer",
+  "version": "0.1.1",
+  "displayName": "Unity Steam itch.io Deployer",
+  "description": "Unity Editor tool that builds once and uploads to Steam via SteamCMD and itch.io via butler. Supports multi-target deployment, encrypted credentials, and asynchronous CLI execution.",
   "unity": "2021.3",
   "type": "tool",
   "keywords": [
@@ -11,10 +11,13 @@
     "deploy",
     "upload",
     "build",
-    "pipeline"
+    "pipeline",
+    "itchio",
+    "butler"
   ],
   "author": {
-    "name": "Steam Deployer Contributors"
+    "name": "PeDev",
+    "url": "https://github.com/qwe321qwe321qwe321"
   },
   "license": "MIT"
 }

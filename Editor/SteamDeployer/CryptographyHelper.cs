@@ -7,7 +7,7 @@ using UnityEngine;
 namespace SteamDeployer
 {
     /// <summary>
-    /// Provides AES-256-CBC symmetric encryption and decryption for securing the Steam password.
+    /// Provides AES-256-CBC symmetric encryption and decryption for securing deploy credentials.
     ///
     /// KEY DERIVATION MATH:
     ///   AES Key (32 bytes) = SHA-256( deviceUniqueIdentifier + CRYPTO_SALT )
@@ -29,9 +29,6 @@ namespace SteamDeployer
         // Hardcoded domain-separation salt. Changing this value will invalidate all stored passwords.
         // It is intentionally non-secret; its purpose is to prevent cross-application key reuse.
         private const string CRYPTO_SALT = "SteamDeployer_v1_#xK9mP2@qR7!Salt";
-
-        // EditorPrefs key under which the Base64 ciphertext is stored.
-        private const string EDITOR_PREFS_KEY = "SteamDeployer_EncryptedPassword";
 
         // ─── Key / IV Derivation ──────────────────────────────────────────────────
 
@@ -79,11 +76,17 @@ namespace SteamDeployer
         /// on the same machine, as the key is derived from the hardware device ID.
         /// Passing null or empty clears any stored password.
         /// </summary>
-        public static void SaveEncryptedPassword(string plainTextPassword)
+        public static void SaveEncryptedValue(string editorPrefsKey, string plainTextValue)
         {
-            if (string.IsNullOrEmpty(plainTextPassword))
+            if (string.IsNullOrWhiteSpace(editorPrefsKey))
             {
-                EditorPrefs.DeleteKey(EDITOR_PREFS_KEY);
+                Debug.LogError("[SteamDeployer] Cannot save encrypted value: missing EditorPrefs key.");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(plainTextValue))
+            {
+                EditorPrefs.DeleteKey(editorPrefsKey);
                 return;
             }
 
@@ -99,12 +102,12 @@ namespace SteamDeployer
 
                     using (var encryptor = aes.CreateEncryptor())
                     {
-                        byte[] plainBytes  = Encoding.UTF8.GetBytes(plainTextPassword);
+                        byte[] plainBytes  = Encoding.UTF8.GetBytes(plainTextValue);
                         // TransformFinalBlock processes the last (and only) block including padding
                         byte[] cipherBytes = encryptor.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
 
                         // Base64 is safe for EditorPrefs (which stores plain strings)
-                        EditorPrefs.SetString(EDITOR_PREFS_KEY, Convert.ToBase64String(cipherBytes));
+                        EditorPrefs.SetString(editorPrefsKey, Convert.ToBase64String(cipherBytes));
                     }
                 }
             }
@@ -118,9 +121,12 @@ namespace SteamDeployer
         /// Retrieves the stored ciphertext from EditorPrefs and decrypts it using AES-256-CBC.
         /// Returns null if no password is stored, the data is corrupted, or this is a different machine.
         /// </summary>
-        public static string LoadDecryptedPassword()
+        public static string LoadDecryptedValue(string editorPrefsKey)
         {
-            string stored = EditorPrefs.GetString(EDITOR_PREFS_KEY, null);
+            if (string.IsNullOrWhiteSpace(editorPrefsKey))
+                return null;
+
+            string stored = EditorPrefs.GetString(editorPrefsKey, null);
             if (string.IsNullOrEmpty(stored))
                 return null;
 
@@ -153,16 +159,38 @@ namespace SteamDeployer
         }
 
         /// <summary>Returns true if an encrypted password entry exists in EditorPrefs.</summary>
-        public static bool HasStoredPassword()
+        public static bool HasStoredValue(string editorPrefsKey)
         {
-            return EditorPrefs.HasKey(EDITOR_PREFS_KEY) &&
-                   !string.IsNullOrEmpty(EditorPrefs.GetString(EDITOR_PREFS_KEY, null));
+            return !string.IsNullOrWhiteSpace(editorPrefsKey)
+                   && EditorPrefs.HasKey(editorPrefsKey)
+                   && !string.IsNullOrEmpty(EditorPrefs.GetString(editorPrefsKey, null));
         }
 
-        /// <summary>Permanently removes the encrypted password from EditorPrefs.</summary>
+        /// <summary>Permanently removes the encrypted value from EditorPrefs.</summary>
+        public static void ClearStoredValue(string editorPrefsKey)
+        {
+            if (!string.IsNullOrWhiteSpace(editorPrefsKey))
+                EditorPrefs.DeleteKey(editorPrefsKey);
+        }
+
+        public static void SaveEncryptedPassword(string plainTextPassword)
+        {
+            SaveEncryptedValue("SteamDeployer_EncryptedPassword", plainTextPassword);
+        }
+
+        public static string LoadDecryptedPassword()
+        {
+            return LoadDecryptedValue("SteamDeployer_EncryptedPassword");
+        }
+
+        public static bool HasStoredPassword()
+        {
+            return HasStoredValue("SteamDeployer_EncryptedPassword");
+        }
+
         public static void ClearStoredPassword()
         {
-            EditorPrefs.DeleteKey(EDITOR_PREFS_KEY);
+            ClearStoredValue("SteamDeployer_EncryptedPassword");
         }
     }
 }
