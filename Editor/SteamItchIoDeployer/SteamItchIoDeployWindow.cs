@@ -753,7 +753,7 @@ namespace SteamItchIoDeployer
 					DeployTargets selectedTargets = GetSelectedTargets();
 					bool hasTargets = selectedTargets != DeployTargets.None;
 					bool canBuild = CanBuildSelectedTargets();
-					bool canUpload = hasTargets && ValidateSelectedTargetsForUpload(showDialogs: false) && CheckAnyBuildExecutableExists();
+					bool canUpload = hasTargets && ValidateSelectedTargetsForUpload(showDialogs: false) && CheckAnyBuildOutputExists();
 					bool canBuildAndUpload = hasTargets && ValidateSelectedTargetsForUpload(showDialogs: false, requireCredentials: true, requireBuildOutput: true);
 
 					using (new GUILayout.HorizontalScope())
@@ -783,7 +783,7 @@ namespace SteamItchIoDeployer
 					else if (!HasAnyBuildOutputPath())
 						EditorGUILayout.HelpBox("Set the shared build output path to enable Build.", MessageType.None);
 					else if (!canUpload)
-						EditorGUILayout.HelpBox("Upload needs valid platform settings and an existing executable in the selected build output path.", MessageType.None);
+						EditorGUILayout.HelpBox("Upload needs valid platform settings and an existing build output in the selected build output path.", MessageType.None);
 				}
 			}
 			EditorGUILayout.Space(3);
@@ -940,9 +940,9 @@ namespace SteamItchIoDeployer
 		private void StartUploadOnly()
 		{
 			if (!ValidateSelectedTargetsForUpload(showDialogs: true, requireCredentials: true, requireBuildOutput: true)) return;
-			if (!CheckAnyBuildExecutableExists())
+			if (!CheckAnyBuildOutputExists())
 			{
-				EditorUtility.DisplayDialog("No Build Found", "No executable was found in the selected build output path. Please run a build first.", "OK");
+				EditorUtility.DisplayDialog("No Build Found", "No build output was found in the selected build output path. Please run a build first.", "OK");
 				return;
 			}
 
@@ -1206,6 +1206,9 @@ namespace SteamItchIoDeployer
 
 		private static string GetBuildLocationPath(string outputPath, BuildTarget target)
 		{
+			if (target == BuildTarget.WebGL)
+				return outputPath;
+
 			return Path.Combine(outputPath, Application.productName + GetExeExtension(target));
 		}
 
@@ -1472,15 +1475,43 @@ namespace SteamItchIoDeployer
 			return true;
 		}
 
-		private bool CheckAnyBuildExecutableExists()
+		private bool CheckAnyBuildOutputExists()
 		{
 			string path = ResolveSelectedBuildOutputPath();
 			if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return false;
+
+			BuildTarget target = GetSelectedBuildTarget();
+			if (target == BuildTarget.WebGL)
+				return HasWebGlBuildOutput(path);
 
 			return Directory.GetFiles(path, "*.exe", SearchOption.TopDirectoryOnly).Length > 0
 				|| Directory.GetFiles(path, "*.app", SearchOption.TopDirectoryOnly).Length > 0
 				|| Directory.GetFiles(path, "*.x86_64", SearchOption.TopDirectoryOnly).Length > 0
 				|| Directory.GetFiles(path, "*.x86", SearchOption.TopDirectoryOnly).Length > 0;
+		}
+
+		private BuildTarget GetSelectedBuildTarget()
+		{
+	#if UNITY_6000_0_OR_NEWER
+			if (_buildDeployConfig != null && _buildDeployConfig.BuildProfile != null)
+			{
+				try
+				{
+					return GetBuildTargetFromProfile(_buildDeployConfig.BuildProfile);
+				}
+				catch
+				{
+				}
+			}
+	#endif
+
+			return EditorUserBuildSettings.activeBuildTarget;
+		}
+
+		private static bool HasWebGlBuildOutput(string path)
+		{
+			return Directory.GetFiles(path, "index.html", SearchOption.AllDirectories).Length > 0
+				&& Directory.GetDirectories(path, "Build", SearchOption.AllDirectories).Length > 0;
 		}
 
 		private string ResolveSelectedBuildOutputPath()
