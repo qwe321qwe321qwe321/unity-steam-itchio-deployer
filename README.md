@@ -12,7 +12,7 @@ Unity Editor plugin for building once and deploying the same build to Steam and 
 
 - Multi-target deployment: select **Steam**, **itch.io**, or both.
 - Shared **Build & Upload** pipeline: one Unity build, then sequential uploads to each selected platform.
-- Separate config assets for each platform: `SteamDeployConfig` and `ItchioDeployConfig`.
+- Separate config assets for each platform: `SteamDeployConfig` and `ItchIoDeployConfig`.
 - Tabbed per-platform settings and auth UI while keeping one shared console log.
 - Steam upload via generated VDF scripts and asynchronous `steamcmd` execution.
 - itch.io upload via asynchronous `butler push` using `BUTLER_API_KEY`.
@@ -49,7 +49,7 @@ https://github.com/qwe321qwe321qwe321/unity-steam-itchio-deployer.git
 
 ### Manual
 
-Copy the `Editor/SteamDeployer/` folder into any `Editor/` directory in the target project.
+Copy the `Editor/SteamItchIoDeployer/` folder into any `Editor/` directory in the target project.
 
 ---
 
@@ -95,7 +95,7 @@ Steam auth is entered in the Steam tab:
 
 ### 4. itch.io settings
 
-`ItchioDeployConfig` contains:
+`ItchIoDeployConfig` contains:
 
 - `ButlerPath`
 - `Target` in `username/game` format
@@ -189,13 +189,13 @@ Create a butler API key from your itch.io account settings, then paste it into t
 ## Architecture
 
 ```text
-Editor/SteamDeployer/
+Editor/SteamItchIoDeployer/
 ├── SteamDeployConfig.cs        Steam-specific config asset
-├── ItchioDeployConfig.cs       itch.io-specific config asset
+├── ItchIoDeployConfig.cs       itch.io-specific config asset
 ├── CryptographyHelper.cs       AES-256 encrypt/decrypt, EditorPrefs ciphertext management
 ├── VDFGenerator.cs             Generates Steam app_build.vdf and depot_build.vdf
 ├── CliProcessHandler.cs        Generic async CLI process runner for steamcmd and butler
-└── SteamDeployWindow.cs        Main EditorWindow UI and orchestration
+└── SteamItchIoDeployWindow.cs  Main EditorWindow UI and orchestration
 ```
 
 ---

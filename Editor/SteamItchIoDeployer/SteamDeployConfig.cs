@@ -1,14 +1,14 @@
 using UnityEngine;
 
-namespace SteamDeployer
+namespace SteamItchIoDeployer
 {
     /// <summary>
     /// ScriptableObject asset that stores all non-sensitive Steam deployment configuration.
     /// Designed to live inside an Editor folder and be committed to version control.
     /// SECURITY: Passwords and sensitive credentials are NEVER stored here.
-    /// Create via: Assets > Create > SteamDeployer > Deploy Config
+    /// Create via: Assets > Create > Steam itch.io Deployer > Steam Deploy Config
     /// </summary>
-    [CreateAssetMenu(fileName = "SteamDeployConfig", menuName = "SteamDeployer/Deploy Config")]
+    [CreateAssetMenu(fileName = "SteamDeployConfig", menuName = "Steam itch.io Deployer/Steam Deploy Config")]
     public class SteamDeployConfig : ScriptableObject
     {
         [Tooltip("Your Steam Application ID (found on the Steamworks partner portal).")]

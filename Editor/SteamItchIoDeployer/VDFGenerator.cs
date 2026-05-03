@@ -3,7 +3,7 @@ using System.IO;
 using System.Text;
 using UnityEngine;
 
-namespace SteamDeployer
+namespace SteamItchIoDeployer
 {
     /// <summary>
     /// Utility class responsible for dynamically generating Valve Data Format (VDF) script files
@@ -90,7 +90,7 @@ namespace SteamDeployer
 
             string appVdfPath = Path.Combine(scriptsDir, $"app_build_{config.AppID}.vdf");
             File.WriteAllText(appVdfPath, sb.ToString(), Encoding.UTF8);
-            Debug.Log($"[SteamDeployer] Written app VDF: {appVdfPath}");
+            Debug.Log($"[SteamItchIoDeployer] Written app VDF: {appVdfPath}");
 
             return appVdfPath;
         }
@@ -139,7 +139,7 @@ namespace SteamDeployer
 
             string depotVdfPath = Path.Combine(scriptsDir, $"depot_build_{config.DepotID}.vdf");
             File.WriteAllText(depotVdfPath, sb.ToString(), Encoding.UTF8);
-            Debug.Log($"[SteamDeployer] Written depot VDF: {depotVdfPath}");
+            Debug.Log($"[SteamItchIoDeployer] Written depot VDF: {depotVdfPath}");
 
             return depotVdfPath;
         }

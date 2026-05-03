@@ -10,9 +10,9 @@ using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
-namespace SteamDeployer
+namespace SteamItchIoDeployer
 {
-	public sealed class SteamDeployWindow : EditorWindow
+	public sealed class SteamItchIoDeployWindow : EditorWindow
 	{
 		private enum DeployState
 		{
@@ -30,19 +30,19 @@ namespace SteamDeployer
 		{
 			None   = 0,
 			Steam  = 1 << 0,
-			Itchio = 1 << 1,
+			ItchIo = 1 << 1,
 		}
 
 		private enum PlatformTab
 		{
 			Steam,
-			Itchio,
+			ItchIo,
 		}
 
 		private const string SteamUsernamePrefsKey = "SteamDeployer_Username";
 		private const string DeployTargetsPrefsKey = "SteamDeployer_SelectedTargets";
-		private const string ItchioSaveApiKeyPrefsKey = "SteamDeployer_ItchioSaveApiKey";
-		private const string ItchioApiKeyCipherPrefsKey = "SteamDeployer_EncryptedItchioApiKey";
+		private const string ItchIoSaveApiKeyPrefsKey = "SteamDeployer_ItchioSaveApiKey";
+		private const string ItchIoApiKeyCipherPrefsKey = "SteamDeployer_EncryptedItchioApiKey";
 		private const string BuildProfilePrefsKey = "SteamDeployer_BuildProfilePath";
 		private const int MaxLogBufferChars = 60_000;
 
@@ -51,7 +51,7 @@ namespace SteamDeployer
 		private float _progressValue;
 
 		private SteamDeployConfig _steamConfig;
-		private ItchioDeployConfig _itchioConfig;
+		private ItchIoDeployConfig _itchIoConfig;
 
 		private DeployTargets _selectedTargets = DeployTargets.Steam;
 		private PlatformTab _selectedTab = PlatformTab.Steam;
@@ -60,8 +60,8 @@ namespace SteamDeployer
 		private string _steamPassword = "";
 		private bool _saveSteamCredentials;
 
-		private string _itchioApiKey = "";
-		private bool _saveItchioApiKey;
+		private string _itchIoApiKey = "";
+		private bool _saveItchIoApiKey;
 
 		private bool _authFoldout = true;
 		private bool _platformSettingsFoldout = true;
@@ -98,7 +98,7 @@ namespace SteamDeployer
 		[MenuItem("Tools/Steam itch.io Deployer/Open Window")]
 		public static void OpenWindow()
 		{
-			var window = GetWindow<SteamDeployWindow>("Steam itch.io Deployer");
+			var window = GetWindow<SteamItchIoDeployWindow>("Steam itch.io Deployer");
 			window.minSize = new Vector2(560, 760);
 			window.Show();
 		}
@@ -119,22 +119,22 @@ namespace SteamDeployer
 				_saveSteamCredentials = true;
 			}
 
-			_saveItchioApiKey = EditorPrefs.GetBool(ItchioSaveApiKeyPrefsKey, false);
-			if (CryptographyHelper.HasStoredValue(ItchioApiKeyCipherPrefsKey))
-				_itchioApiKey = CryptographyHelper.LoadDecryptedValue(ItchioApiKeyCipherPrefsKey) ?? "";
+			_saveItchIoApiKey = EditorPrefs.GetBool(ItchIoSaveApiKeyPrefsKey, false);
+			if (CryptographyHelper.HasStoredValue(ItchIoApiKeyCipherPrefsKey))
+				_itchIoApiKey = CryptographyHelper.LoadDecryptedValue(ItchIoApiKeyCipherPrefsKey) ?? "";
 
 			bool steamAuthReady = !string.IsNullOrWhiteSpace(_steamUsername) && !string.IsNullOrWhiteSpace(_steamPassword);
-			bool itchAuthReady = !string.IsNullOrWhiteSpace(_itchioApiKey);
+			bool itchAuthReady = !string.IsNullOrWhiteSpace(_itchIoApiKey);
 			_authFoldout = !(steamAuthReady && itchAuthReady);
 
 			bool steamSettingsReady = _steamConfig != null
 				&& !string.IsNullOrWhiteSpace(_steamConfig.AppID)
 				&& !string.IsNullOrWhiteSpace(_steamConfig.DepotID)
 				&& !string.IsNullOrWhiteSpace(_steamConfig.SteamCmdPath);
-			bool itchSettingsReady = _itchioConfig != null
-				&& !string.IsNullOrWhiteSpace(_itchioConfig.Target)
-				&& !string.IsNullOrWhiteSpace(_itchioConfig.Channel)
-				&& !string.IsNullOrWhiteSpace(_itchioConfig.ButlerPath);
+			bool itchSettingsReady = _itchIoConfig != null
+				&& !string.IsNullOrWhiteSpace(_itchIoConfig.Target)
+				&& !string.IsNullOrWhiteSpace(_itchIoConfig.Channel)
+				&& !string.IsNullOrWhiteSpace(_itchIoConfig.ButlerPath);
 			_platformSettingsFoldout = !(steamSettingsReady && itchSettingsReady);
 
 			EditorApplication.update += OnEditorUpdate;
@@ -209,7 +209,7 @@ namespace SteamDeployer
 				EditorGUILayout.HelpBox("Select one or more upload targets. Build runs once, then uploads to each selected platform in sequence.", MessageType.None);
 
 				bool steam = (_selectedTargets & DeployTargets.Steam) != 0;
-				bool itch = (_selectedTargets & DeployTargets.Itchio) != 0;
+				bool itch = (_selectedTargets & DeployTargets.ItchIo) != 0;
 
 				using (var check = new EditorGUI.ChangeCheckScope())
 				{
@@ -220,12 +220,12 @@ namespace SteamDeployer
 					{
 						_selectedTargets = DeployTargets.None;
 						if (steam) _selectedTargets |= DeployTargets.Steam;
-						if (itch) _selectedTargets |= DeployTargets.Itchio;
+						if (itch) _selectedTargets |= DeployTargets.ItchIo;
 						EditorPrefs.SetInt(DeployTargetsPrefsKey, (int)_selectedTargets);
 
 						if (_selectedTab == PlatformTab.Steam && !steam && itch)
-							_selectedTab = PlatformTab.Itchio;
-						else if (_selectedTab == PlatformTab.Itchio && !itch && steam)
+							_selectedTab = PlatformTab.ItchIo;
+						else if (_selectedTab == PlatformTab.ItchIo && !itch && steam)
 							_selectedTab = PlatformTab.Steam;
 					}
 				}
@@ -245,9 +245,9 @@ namespace SteamDeployer
 					if (_steamConfig == null && GUILayout.Button("Create Steam Config Asset"))
 						CreateSteamConfigAsset();
 
-					_itchioConfig = (ItchioDeployConfig)EditorGUILayout.ObjectField("itch.io Config", _itchioConfig, typeof(ItchioDeployConfig), false);
-					if (_itchioConfig == null && GUILayout.Button("Create itch.io Config Asset"))
-						CreateItchioConfigAsset();
+					_itchIoConfig = (ItchIoDeployConfig)EditorGUILayout.ObjectField("itch.io Config", _itchIoConfig, typeof(ItchIoDeployConfig), false);
+					if (_itchIoConfig == null && GUILayout.Button("Create itch.io Config Asset"))
+						CreateItchIoConfigAsset();
 				}
 			}
 			EditorGUILayout.Space(3);
@@ -256,7 +256,7 @@ namespace SteamDeployer
 		private void DrawPlatformTabs(bool locked)
 		{
 			bool hasSteam = _steamConfig != null || (_selectedTargets & DeployTargets.Steam) != 0;
-			bool hasItch = _itchioConfig != null || (_selectedTargets & DeployTargets.Itchio) != 0;
+			bool hasItch = _itchIoConfig != null || (_selectedTargets & DeployTargets.ItchIo) != 0;
 			if (!hasSteam && !hasItch)
 			{
 				hasSteam = true;
@@ -280,8 +280,8 @@ namespace SteamDeployer
 
 						using (new EditorGUI.DisabledScope(!hasItch))
 						{
-							if (GUILayout.Toggle(_selectedTab == PlatformTab.Itchio, "itch.io", EditorStyles.toolbarButton))
-								_selectedTab = PlatformTab.Itchio;
+							if (GUILayout.Toggle(_selectedTab == PlatformTab.ItchIo, "itch.io", EditorStyles.toolbarButton))
+								_selectedTab = PlatformTab.ItchIo;
 						}
 					}
 				}
@@ -298,7 +298,7 @@ namespace SteamDeployer
 				{
 					if (_selectedTab == PlatformTab.Steam && !string.IsNullOrWhiteSpace(_steamUsername))
 						EditorGUILayout.LabelField($"  Logged in as: {_steamUsername}", EditorStyles.miniLabel);
-					else if (_selectedTab == PlatformTab.Itchio && !string.IsNullOrWhiteSpace(_itchioApiKey))
+					else if (_selectedTab == PlatformTab.ItchIo && !string.IsNullOrWhiteSpace(_itchIoApiKey))
 						EditorGUILayout.LabelField("  API key loaded", EditorStyles.miniLabel);
 				}
 				else
@@ -308,7 +308,7 @@ namespace SteamDeployer
 						if (_selectedTab == PlatformTab.Steam)
 							DrawSteamAuthFields();
 						else
-							DrawItchioAuthFields();
+							DrawItchIoAuthFields();
 					}
 				}
 			}
@@ -369,7 +369,7 @@ namespace SteamDeployer
 				EditorGUILayout.HelpBox("Fill in username, password, and SteamCMD path to enable Steam login testing.", MessageType.None);
 		}
 
-		private void DrawItchioAuthFields()
+		private void DrawItchIoAuthFields()
 		{
 			EditorGUILayout.Space(4);
 			EditorGUILayout.HelpBox("Use a butler API key. The upload process injects it as BUTLER_API_KEY for the child process.", MessageType.None);
@@ -380,31 +380,31 @@ namespace SteamDeployer
 					Application.OpenURL("https://itch.io/user/settings/api-keys");
 			}
 			EditorGUILayout.Space(4);
-			_itchioApiKey = EditorGUILayout.PasswordField("BUTLER_API_KEY", _itchioApiKey);
+			_itchIoApiKey = EditorGUILayout.PasswordField("BUTLER_API_KEY", _itchIoApiKey);
 			EditorGUILayout.Space(4);
 
-			bool prevSave = _saveItchioApiKey;
-			_saveItchioApiKey = EditorGUILayout.Toggle(new GUIContent("Save API key (AES-256)", "Encrypts the itch.io API key and stores it in EditorPrefs."), _saveItchioApiKey);
-			EditorPrefs.SetBool(ItchioSaveApiKeyPrefsKey, _saveItchioApiKey);
+			bool prevSave = _saveItchIoApiKey;
+			_saveItchIoApiKey = EditorGUILayout.Toggle(new GUIContent("Save API key (AES-256)", "Encrypts the itch.io API key and stores it in EditorPrefs."), _saveItchIoApiKey);
+			EditorPrefs.SetBool(ItchIoSaveApiKeyPrefsKey, _saveItchIoApiKey);
 
-			if (prevSave && !_saveItchioApiKey)
-				CryptographyHelper.ClearStoredValue(ItchioApiKeyCipherPrefsKey);
+			if (prevSave && !_saveItchIoApiKey)
+				CryptographyHelper.ClearStoredValue(ItchIoApiKeyCipherPrefsKey);
 
-			if (_saveItchioApiKey)
+			if (_saveItchIoApiKey)
 			{
 				using (new GUILayout.HorizontalScope())
 				{
 					GUILayout.FlexibleSpace();
 					if (GUILayout.Button("Save Now", GUILayout.Width(100)))
 					{
-						CryptographyHelper.SaveEncryptedValue(ItchioApiKeyCipherPrefsKey, _itchioApiKey);
+						CryptographyHelper.SaveEncryptedValue(ItchIoApiKeyCipherPrefsKey, _itchIoApiKey);
 						EditorUtility.DisplayDialog("Saved", "itch.io API key encrypted and stored in EditorPrefs.", "OK");
 					}
 					if (GUILayout.Button("Clear Saved", GUILayout.Width(100)))
-						CryptographyHelper.ClearStoredValue(ItchioApiKeyCipherPrefsKey);
+						CryptographyHelper.ClearStoredValue(ItchIoApiKeyCipherPrefsKey);
 				}
 
-				if (CryptographyHelper.HasStoredValue(ItchioApiKeyCipherPrefsKey))
+				if (CryptographyHelper.HasStoredValue(ItchIoApiKeyCipherPrefsKey))
 					EditorGUILayout.HelpBox("Encrypted itch.io API key stored for this machine.", MessageType.Info);
 			}
 		}
@@ -425,7 +425,7 @@ namespace SteamDeployer
 						if (_selectedTab == PlatformTab.Steam)
 							DrawSteamSettingsFields();
 						else
-							DrawItchioSettingsFields();
+							DrawItchIoSettingsFields();
 					}
 				}
 			}
@@ -436,8 +436,8 @@ namespace SteamDeployer
 		{
 			if (_selectedTab == PlatformTab.Steam && _steamConfig != null)
 				EditorGUILayout.LabelField($"  App ID: {_steamConfig.AppID}  |  Depot ID: {_steamConfig.DepotID}", EditorStyles.miniLabel);
-			else if (_selectedTab == PlatformTab.Itchio && _itchioConfig != null)
-				EditorGUILayout.LabelField($"  Target: {_itchioConfig.Target}:{_itchioConfig.Channel}", EditorStyles.miniLabel);
+			else if (_selectedTab == PlatformTab.ItchIo && _itchIoConfig != null)
+				EditorGUILayout.LabelField($"  Target: {_itchIoConfig.Target}:{_itchIoConfig.Channel}", EditorStyles.miniLabel);
 		}
 
 		private void DrawSteamSettingsFields()
@@ -490,9 +490,9 @@ namespace SteamDeployer
 			DrawSteamCmdDownloadTools();
 		}
 
-		private void DrawItchioSettingsFields()
+		private void DrawItchIoSettingsFields()
 		{
-			if (_itchioConfig == null)
+			if (_itchIoConfig == null)
 			{
 				EditorGUILayout.HelpBox("Assign or create an itch.io config asset first.", MessageType.Warning);
 				return;
@@ -501,54 +501,54 @@ namespace SteamDeployer
 			EditorGUILayout.Space(4);
 			using (var check = new EditorGUI.ChangeCheckScope())
 			{
-				_itchioConfig.Target = EditorGUILayout.TextField(
+				_itchIoConfig.Target = EditorGUILayout.TextField(
 					new GUIContent(
 						"Target",
 						"The itch.io project to upload to, in the form username/game. Example: leafo/celestial-roads. " +
 						"This must match the exact URL slug of an already-created itch.io project page."),
-					_itchioConfig.Target);
+					_itchIoConfig.Target);
 				EditorGUILayout.HelpBox(
 					"Target tells butler which itch.io project receives the build. Use the exact page address slug in the form username/game. " +
 					"Example: if the page URL is https://myname.itch.io/my-cool-game, the target is myname/my-cool-game.",
 					MessageType.None);
 
-				_itchioConfig.Channel = EditorGUILayout.TextField(
+				_itchIoConfig.Channel = EditorGUILayout.TextField(
 					new GUIContent(
 						"Channel",
 						"The slot name inside the itch.io project. Common examples: windows, windows-beta, linux, mac-stable. " +
 						"Channel names influence initial platform tagging on itch.io."),
-					_itchioConfig.Channel);
+					_itchIoConfig.Channel);
 				EditorGUILayout.HelpBox(
 					"Channel is the destination slot inside that itch.io project. Re-uploading to the same channel updates that slot. " +
 					"Names such as windows, linux, mac, windows-beta, or win-stable are typical. If the name contains win/windows, linux, or mac/osx, itch.io uses that to infer platform tags. " +
 					"Use lower-case kebab-case when possible. For browser builds, you may use a name like html5, web, or browser, but note that browser-playable / HTML status is not controlled by the channel name alone. After the first upload, you still need to configure the itch.io project page as HTML / Playable in browser from the website.",
 					MessageType.None);
 
-				_itchioConfig.UserVersion = EditorGUILayout.TextField(
+				_itchIoConfig.UserVersion = EditorGUILayout.TextField(
 					new GUIContent(
 						"User Version",
 						"Optional human-readable build version passed as butler --userversion. Useful for showing your own version label instead of only itch.io's internal build number."),
-					_itchioConfig.UserVersion);
+					_itchIoConfig.UserVersion);
 				EditorGUILayout.HelpBox(
 					"User Version is the build label visible to you and your players, for example 1.2.0, 2026.05.03, or demo-7. " +
 					"It is passed to butler as --userversion. Supports {Version}, {Date}, and {DateTime} macros, so {Version} usually maps nicely to Application.version.",
 					MessageType.None);
-				_itchioConfig.IgnoreFiles = EditorGUILayout.TextField("Ignore Files", _itchioConfig.IgnoreFiles);
-				_itchioConfig.Hidden = EditorGUILayout.Toggle(
+				_itchIoConfig.IgnoreFiles = EditorGUILayout.TextField("Ignore Files", _itchIoConfig.IgnoreFiles);
+				_itchIoConfig.Hidden = EditorGUILayout.Toggle(
 					new GUIContent(
 						"Hidden First Push",
 						"Reserved option for hiding the first upload on a newly created channel. Some butler versions do not support this flag."),
-					_itchioConfig.Hidden);
+					_itchIoConfig.Hidden);
 				EditorGUILayout.HelpBox(
 					"Intended meaning: keep the first upload to a brand-new channel hidden so it does not become immediately visible to players. " +
 					"However, some butler builds do not support the hidden-channel flag. For compatibility, the current tool keeps this setting as informational only and does not pass a hidden flag during upload.",
 					MessageType.None);
 
-				_itchioConfig.IfChanged = EditorGUILayout.Toggle(
+				_itchIoConfig.IfChanged = EditorGUILayout.Toggle(
 					new GUIContent(
 						"Upload Only If Changed",
 						"Passes --if-changed to butler so no new build is created when the local contents are identical to the latest upload on that channel."),
-					_itchioConfig.IfChanged);
+					_itchIoConfig.IfChanged);
 				EditorGUILayout.HelpBox(
 					"Upload Only If Changed skips the upload entirely when the selected build folder is identical to the latest build already on that channel. " +
 					"Use it to reduce no-op uploads in repetitive release workflows. If you always want a fresh build entry even when files did not change, leave this off.",
@@ -559,24 +559,24 @@ namespace SteamDeployer
 
 				using (new GUILayout.HorizontalScope())
 				{
-					_itchioConfig.ButlerPath = EditorGUILayout.TextField(_itchioConfig.ButlerPath);
+					_itchIoConfig.ButlerPath = EditorGUILayout.TextField(_itchIoConfig.ButlerPath);
 					if (GUILayout.Button("Browse…", GUILayout.Width(72)))
 					{
 						string browsedPath = EditorUtility.OpenFilePanel("Locate butler executable", "", IsWindowsEditor() ? "exe" : "");
 						if (!string.IsNullOrEmpty(browsedPath))
 						{
-							_itchioConfig.ButlerPath = NormalizeProjectRelativePath(browsedPath);
+							_itchIoConfig.ButlerPath = NormalizeProjectRelativePath(browsedPath);
 							RefreshExecutableExists();
-							EditorUtility.SetDirty(_itchioConfig);
+							EditorUtility.SetDirty(_itchIoConfig);
 							AssetDatabase.SaveAssets();
 						}
 					}
 				}
 
-				DrawBuildOutputEditor(_itchioConfig, _itchioConfig.BuildOutputPath, value => _itchioConfig.BuildOutputPath = value);
+				DrawBuildOutputEditor(_itchIoConfig, _itchIoConfig.BuildOutputPath, value => _itchIoConfig.BuildOutputPath = value);
 
 				if (check.changed)
-					SaveConfig(_itchioConfig, refreshExecutables: true);
+					SaveConfig(_itchIoConfig, refreshExecutables: true);
 			}
 
 			if (!_itchButlerFileExists)
@@ -647,9 +647,9 @@ namespace SteamDeployer
 
 		private void DrawButlerDownloadTools()
 		{
-			if (_itchioConfig == null) return;
+			if (_itchIoConfig == null) return;
 
-			if (string.IsNullOrWhiteSpace(_itchioConfig.ButlerPath) || !_itchButlerFileExists)
+			if (string.IsNullOrWhiteSpace(_itchIoConfig.ButlerPath) || !_itchButlerFileExists)
 			{
 				EditorGUILayout.Space(2);
 				using (new EditorGUI.DisabledScope(_isDownloadingButler))
@@ -936,8 +936,8 @@ namespace SteamDeployer
 
 			if ((_selectedTargets & DeployTargets.Steam) != 0)
 				_pendingUploads.Enqueue(DeployTargets.Steam);
-			if ((_selectedTargets & DeployTargets.Itchio) != 0)
-				_pendingUploads.Enqueue(DeployTargets.Itchio);
+			if ((_selectedTargets & DeployTargets.ItchIo) != 0)
+				_pendingUploads.Enqueue(DeployTargets.ItchIo);
 		}
 
 		private void LaunchNextUploadTarget()
@@ -956,7 +956,7 @@ namespace SteamDeployer
 			if (nextTarget == DeployTargets.Steam)
 				LaunchSteamUpload("");
 			else
-				LaunchItchioUpload();
+				LaunchItchIoUpload();
 		}
 
 		private void LaunchSteamUpload(string steamGuardCode)
@@ -994,17 +994,17 @@ namespace SteamDeployer
 			}
 		}
 
-		private void LaunchItchioUpload()
+		private void LaunchItchIoUpload()
 		{
 			string buildOutputPath = ResolveSelectedBuildOutputPath();
-			string[] ignorePatterns = SplitIgnorePatterns(_itchioConfig.IgnoreFiles);
+			string[] ignorePatterns = SplitIgnorePatterns(_itchIoConfig.IgnoreFiles);
 			string args = CliProcessHandler.BuildButlerPushArguments(
 				buildOutputPath,
-				_itchioConfig.Target.Trim(),
-				_itchioConfig.Channel.Trim(),
-				ResolveMacros(_itchioConfig.UserVersion),
-				_itchioConfig.Hidden,
-				_itchioConfig.IfChanged,
+				_itchIoConfig.Target.Trim(),
+				_itchIoConfig.Channel.Trim(),
+				ResolveMacros(_itchIoConfig.UserVersion),
+				_itchIoConfig.Hidden,
+				_itchIoConfig.IfChanged,
 				ignorePatterns);
 
 			_processHandler = CreateAndWireProcessHandler(CliProcessHandler.CliToolKind.Butler);
@@ -1016,11 +1016,11 @@ namespace SteamDeployer
 
 			var env = new Dictionary<string, string>
 			{
-				["BUTLER_API_KEY"] = GetEffectiveItchioApiKey(),
+				["BUTLER_API_KEY"] = GetEffectiveItchIoApiKey(),
 			};
 
 			AppendLog($"[itch.io] Launching: {ResolveButlerPath()}", false);
-			AppendLog($"[itch.io] Target: {_itchioConfig.Target}:{_itchioConfig.Channel}", false);
+			AppendLog($"[itch.io] Target: {_itchIoConfig.Target}:{_itchIoConfig.Channel}", false);
 			if (!_processHandler.Start(ResolveButlerPath(), args, env))
 			{
 				_isProcessRunning = false;
@@ -1046,7 +1046,7 @@ namespace SteamDeployer
 				try { Directory.Delete(tempOutputPath, true); } catch { }
 				string detail = report != null ? $"Result={report.summary.result}, Errors={report.summary.totalErrors}" : "BuildReport was null (build may have been cancelled).";
 				AppendLog($"BUILD FAILED: {detail}", true);
-				Debug.LogError($"[SteamDeployer] Unity build FAILED — {detail}.");
+				Debug.LogError($"[SteamItchIoDeployer] Unity build FAILED — {detail}.");
 				failureReason = "Build failed.";
 				return false;
 			}
@@ -1056,7 +1056,7 @@ namespace SteamDeployer
 			Directory.Move(tempOutputPath, buildOutputPath);
 
 			AppendLog($"Build succeeded -> {buildOutputPath}", false);
-			Debug.Log($"[SteamDeployer] Unity build succeeded. Output: {buildOutputPath}");
+			Debug.Log($"[SteamItchIoDeployer] Unity build succeeded. Output: {buildOutputPath}");
 			return true;
 		}
 
@@ -1077,17 +1077,17 @@ namespace SteamDeployer
 			catch (TargetInvocationException ex)
 			{
 				Exception inner = ex.InnerException ?? ex;
-				Debug.LogError($"[SteamDeployer] Failed to resolve build settings: {inner.GetType().Name}: {inner.Message}");
+				Debug.LogError($"[SteamItchIoDeployer] Failed to resolve build settings: {inner.GetType().Name}: {inner.Message}");
 				return null;
 			}
 			catch (BuildPlayerWindow.BuildMethodException ex)
 			{
-				Debug.LogWarning($"[SteamDeployer] Build was cancelled or settings are invalid: {ex.Message}");
+				Debug.LogWarning($"[SteamItchIoDeployer] Build was cancelled or settings are invalid: {ex.Message}");
 				return null;
 			}
 			catch (Exception ex)
 			{
-				Debug.LogError($"[SteamDeployer] Unexpected error during build: {ex.Message}");
+				Debug.LogError($"[SteamItchIoDeployer] Unexpected error during build: {ex.Message}");
 				return null;
 			}
 		}
@@ -1106,7 +1106,7 @@ namespace SteamDeployer
 				catch (TargetInvocationException ex)
 				{
 					Exception inner = ex.InnerException ?? ex;
-					Debug.LogWarning($"[SteamDeployer] Internal build option resolution failed, falling back to manual settings: {inner.GetType().Name}: {inner.Message}");
+					Debug.LogWarning($"[SteamItchIoDeployer] Internal build option resolution failed, falling back to manual settings: {inner.GetType().Name}: {inner.Message}");
 				}
 			}
 
@@ -1252,7 +1252,7 @@ namespace SteamDeployer
 			if ((_selectedTargets & DeployTargets.Steam) != 0 && !ValidateSteamSelection(showDialogs, requireCredentials, requireBuildOutput))
 				return false;
 
-			if ((_selectedTargets & DeployTargets.Itchio) != 0 && !ValidateItchioSelection(showDialogs, requireCredentials, requireBuildOutput))
+			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && !ValidateItchIoSelection(showDialogs, requireCredentials, requireBuildOutput))
 				return false;
 
 			return ValidateSharedBuildOutput(showDialogs, requireBuildOutput);
@@ -1292,24 +1292,24 @@ namespace SteamDeployer
 			return true;
 		}
 
-		private bool ValidateItchioSelection(bool showDialogs, bool requireCredentials, bool requireBuildOutput)
+		private bool ValidateItchIoSelection(bool showDialogs, bool requireCredentials, bool requireBuildOutput)
 		{
-			if (_itchioConfig == null)
+			if (_itchIoConfig == null)
 				return ShowValidationError(showDialogs, "Error", "No itch.io config asset is assigned.");
 
-			if (string.IsNullOrWhiteSpace(_itchioConfig.Target) || !_itchioConfig.Target.Contains("/"))
+			if (string.IsNullOrWhiteSpace(_itchIoConfig.Target) || !_itchIoConfig.Target.Contains("/"))
 				return ShowValidationError(showDialogs, "Error", "itch.io Target must use the format username/game.");
 
-			if (string.IsNullOrWhiteSpace(_itchioConfig.Channel))
+			if (string.IsNullOrWhiteSpace(_itchIoConfig.Channel))
 				return ShowValidationError(showDialogs, "Error", "itch.io Channel is required.");
 
-			if (string.IsNullOrWhiteSpace(_itchioConfig.ButlerPath) || !File.Exists(ResolveButlerPath()))
-				return ShowValidationError(showDialogs, "Butler Not Found", $"butler not found at:\n{_itchioConfig.ButlerPath}");
+			if (string.IsNullOrWhiteSpace(_itchIoConfig.ButlerPath) || !File.Exists(ResolveButlerPath()))
+				return ShowValidationError(showDialogs, "Butler Not Found", $"butler not found at:\n{_itchIoConfig.ButlerPath}");
 
-			if (requireCredentials && string.IsNullOrWhiteSpace(GetEffectiveItchioApiKey()))
+			if (requireCredentials && string.IsNullOrWhiteSpace(GetEffectiveItchIoApiKey()))
 				return ShowValidationError(showDialogs, "Credentials Missing", "Please enter your itch.io BUTLER_API_KEY.");
 
-			if (requireBuildOutput && string.IsNullOrWhiteSpace(_itchioConfig.BuildOutputPath))
+			if (requireBuildOutput && string.IsNullOrWhiteSpace(_itchIoConfig.BuildOutputPath))
 				return ShowValidationError(showDialogs, "Error", "itch.io Build Output Path is not set.");
 
 			return true;
@@ -1330,9 +1330,9 @@ namespace SteamDeployer
 					return ShowValidationError(showDialogs, "Error", "Selected targets must use the same Build Output Path.");
 			}
 
-			if ((_selectedTargets & DeployTargets.Itchio) != 0 && !string.IsNullOrWhiteSpace(_itchioConfig?.BuildOutputPath))
+			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && !string.IsNullOrWhiteSpace(_itchIoConfig?.BuildOutputPath))
 			{
-				string itchPath = ResolveConfigPath(_itchioConfig.BuildOutputPath);
+				string itchPath = ResolveConfigPath(_itchIoConfig.BuildOutputPath);
 				if (!PathsEqual(itchPath, resolvedPath))
 					return ShowValidationError(showDialogs, "Error", "Selected targets must use the same Build Output Path.");
 			}
@@ -1373,10 +1373,10 @@ namespace SteamDeployer
 				_steamConfig.BuildOutputPath = path;
 				SaveConfig(_steamConfig, false);
 			}
-			if ((_selectedTargets & DeployTargets.Itchio) != 0 && _itchioConfig != null)
+			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && _itchIoConfig != null)
 			{
-				_itchioConfig.BuildOutputPath = path;
-				SaveConfig(_itchioConfig, false);
+				_itchIoConfig.BuildOutputPath = path;
+				SaveConfig(_itchIoConfig, false);
 			}
 		}
 
@@ -1389,7 +1389,7 @@ namespace SteamDeployer
 		{
 			if (_selectedTargets == DeployTargets.None) return false;
 			if ((_selectedTargets & DeployTargets.Steam) != 0 && _steamConfig == null) return false;
-			if ((_selectedTargets & DeployTargets.Itchio) != 0 && _itchioConfig == null) return false;
+			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && _itchIoConfig == null) return false;
 			return true;
 		}
 
@@ -1408,8 +1408,8 @@ namespace SteamDeployer
 		{
 			if ((_selectedTargets & DeployTargets.Steam) != 0 && !string.IsNullOrWhiteSpace(_steamConfig?.BuildOutputPath))
 				return ResolveConfigPath(_steamConfig.BuildOutputPath);
-			if ((_selectedTargets & DeployTargets.Itchio) != 0 && !string.IsNullOrWhiteSpace(_itchioConfig?.BuildOutputPath))
-				return ResolveConfigPath(_itchioConfig.BuildOutputPath);
+			if ((_selectedTargets & DeployTargets.ItchIo) != 0 && !string.IsNullOrWhiteSpace(_itchIoConfig?.BuildOutputPath))
+				return ResolveConfigPath(_itchIoConfig.BuildOutputPath);
 			return "";
 		}
 
@@ -1417,8 +1417,8 @@ namespace SteamDeployer
 		{
 			if (_saveSteamCredentials && !string.IsNullOrEmpty(_steamPassword))
 				CryptographyHelper.SaveEncryptedPassword(_steamPassword);
-			if (_saveItchioApiKey && !string.IsNullOrEmpty(_itchioApiKey))
-				CryptographyHelper.SaveEncryptedValue(ItchioApiKeyCipherPrefsKey, _itchioApiKey);
+			if (_saveItchIoApiKey && !string.IsNullOrEmpty(_itchIoApiKey))
+				CryptographyHelper.SaveEncryptedValue(ItchIoApiKeyCipherPrefsKey, _itchIoApiKey);
 		}
 
 		private string GetEffectiveSteamPassword()
@@ -1426,15 +1426,15 @@ namespace SteamDeployer
 			return _saveSteamCredentials ? (CryptographyHelper.LoadDecryptedPassword() ?? _steamPassword) : _steamPassword;
 		}
 
-		private string GetEffectiveItchioApiKey()
+		private string GetEffectiveItchIoApiKey()
 		{
-			return _saveItchioApiKey ? (CryptographyHelper.LoadDecryptedValue(ItchioApiKeyCipherPrefsKey) ?? _itchioApiKey) : _itchioApiKey;
+			return _saveItchIoApiKey ? (CryptographyHelper.LoadDecryptedValue(ItchIoApiKeyCipherPrefsKey) ?? _itchIoApiKey) : _itchIoApiKey;
 		}
 
 		private void RefreshExecutableExists()
 		{
 			_steamCmdFileExists = !string.IsNullOrWhiteSpace(_steamConfig?.SteamCmdPath) && File.Exists(ResolveSteamCmdPath());
-			_itchButlerFileExists = !string.IsNullOrWhiteSpace(_itchioConfig?.ButlerPath) && File.Exists(ResolveButlerPath());
+			_itchButlerFileExists = !string.IsNullOrWhiteSpace(_itchIoConfig?.ButlerPath) && File.Exists(ResolveButlerPath());
 		}
 
 		private string ResolveSteamCmdPath()
@@ -1444,7 +1444,7 @@ namespace SteamDeployer
 
 		private string ResolveButlerPath()
 		{
-			return ResolveConfigPath(_itchioConfig?.ButlerPath);
+			return ResolveConfigPath(_itchIoConfig?.ButlerPath);
 		}
 
 		private static string ResolveConfigPath(string path)
@@ -1556,19 +1556,19 @@ namespace SteamDeployer
 			if (steamGuids.Length > 0)
 				_steamConfig = AssetDatabase.LoadAssetAtPath<SteamDeployConfig>(AssetDatabase.GUIDToAssetPath(steamGuids[0]));
 
-			string[] itchGuids = AssetDatabase.FindAssets("t:ItchioDeployConfig");
+			string[] itchGuids = AssetDatabase.FindAssets("t:ItchIoDeployConfig");
 			if (itchGuids.Length > 0)
-				_itchioConfig = AssetDatabase.LoadAssetAtPath<ItchioDeployConfig>(AssetDatabase.GUIDToAssetPath(itchGuids[0]));
+				_itchIoConfig = AssetDatabase.LoadAssetAtPath<ItchIoDeployConfig>(AssetDatabase.GUIDToAssetPath(itchGuids[0]));
 		}
 
 		private void LoadSavedDeployTargets()
 		{
 			DeployTargets savedTargets = (DeployTargets)EditorPrefs.GetInt(DeployTargetsPrefsKey, (int)DeployTargets.Steam);
-			DeployTargets validTargets = savedTargets & (DeployTargets.Steam | DeployTargets.Itchio);
+			DeployTargets validTargets = savedTargets & (DeployTargets.Steam | DeployTargets.ItchIo);
 			_selectedTargets = validTargets;
 
-			if (_selectedTargets == DeployTargets.Itchio)
-				_selectedTab = PlatformTab.Itchio;
+			if (_selectedTargets == DeployTargets.ItchIo)
+				_selectedTab = PlatformTab.ItchIo;
 			else
 				_selectedTab = PlatformTab.Steam;
 		}
@@ -1606,7 +1606,7 @@ namespace SteamDeployer
 
 		private void CreateSteamConfigAsset()
 		{
-			const string subFolder = "Assets/Editor/SteamDeployer";
+			const string subFolder = "Assets/Editor/SteamItchIoDeployer";
 			EnsureEditorFolders(subFolder);
 			string path = $"{subFolder}/SteamDeployConfig.asset";
 			_steamConfig = CreateInstance<SteamDeployConfig>();
@@ -1615,15 +1615,15 @@ namespace SteamDeployer
 			EditorGUIUtility.PingObject(_steamConfig);
 		}
 
-		private void CreateItchioConfigAsset()
+		private void CreateItchIoConfigAsset()
 		{
-			const string subFolder = "Assets/Editor/SteamDeployer";
+			const string subFolder = "Assets/Editor/SteamItchIoDeployer";
 			EnsureEditorFolders(subFolder);
-			string path = $"{subFolder}/ItchioDeployConfig.asset";
-			_itchioConfig = CreateInstance<ItchioDeployConfig>();
-			AssetDatabase.CreateAsset(_itchioConfig, path);
+			string path = $"{subFolder}/ItchIoDeployConfig.asset";
+			_itchIoConfig = CreateInstance<ItchIoDeployConfig>();
+			AssetDatabase.CreateAsset(_itchIoConfig, path);
 			AssetDatabase.SaveAssets();
-			EditorGUIUtility.PingObject(_itchioConfig);
+			EditorGUIUtility.PingObject(_itchIoConfig);
 		}
 
 		private static void EnsureEditorFolders(string subFolder)
@@ -1631,7 +1631,7 @@ namespace SteamDeployer
 			if (!AssetDatabase.IsValidFolder("Assets/Editor"))
 				AssetDatabase.CreateFolder("Assets", "Editor");
 			if (!AssetDatabase.IsValidFolder(subFolder))
-				AssetDatabase.CreateFolder("Assets/Editor", "SteamDeployer");
+				AssetDatabase.CreateFolder("Assets/Editor", "SteamItchIoDeployer");
 		}
 
 		private void SaveConfig(UnityEngine.Object config, bool refreshExecutables)
@@ -1755,7 +1755,7 @@ namespace SteamDeployer
 
 		private void DownloadAndInstallButler()
 		{
-			if (_itchioConfig == null) return;
+			if (_itchIoConfig == null) return;
 
 			string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
 			string butlerDir = Path.Combine(projectRoot, "butler");
@@ -1824,8 +1824,8 @@ namespace SteamDeployer
 						return;
 					}
 
-					_itchioConfig.ButlerPath = NormalizeProjectRelativePath(butlerExePath.Replace('\\', '/'));
-					SaveConfig(_itchioConfig, true);
+					_itchIoConfig.ButlerPath = NormalizeProjectRelativePath(butlerExePath.Replace('\\', '/'));
+					SaveConfig(_itchIoConfig, true);
 					AppendLog($"butler installed -> {butlerDir}", false);
 				};
 			});

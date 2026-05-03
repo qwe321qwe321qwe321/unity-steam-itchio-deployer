@@ -1,13 +1,13 @@
 using UnityEngine;
 
-namespace SteamDeployer
+namespace SteamItchIoDeployer
 {
 	/// <summary>
 	/// ScriptableObject asset that stores all non-sensitive itch.io deployment configuration.
 	/// Sensitive auth is stored separately in EditorPrefs.
 	/// </summary>
-	[CreateAssetMenu(fileName = "ItchioDeployConfig", menuName = "SteamDeployer/Itch.io Deploy Config")]
-	public class ItchioDeployConfig : ScriptableObject
+	[CreateAssetMenu(fileName = "ItchIoDeployConfig", menuName = "Steam itch.io Deployer/itch.io Deploy Config")]
+	public class ItchIoDeployConfig : ScriptableObject
 	{
 		[Tooltip("Absolute or project-relative path to the directory where Unity outputs the build.")]
 		public string BuildOutputPath = "";

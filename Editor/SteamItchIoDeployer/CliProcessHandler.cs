@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
-namespace SteamDeployer
+namespace SteamItchIoDeployer
 {
 	/// <summary>
 	/// Generic async child-process wrapper for CLI-based deploy tools such as steamcmd and butler.
@@ -190,7 +190,7 @@ namespace SteamDeployer
 				bool started = _process.Start();
 				if (!started)
 				{
-					Debug.LogError("[SteamDeployer] Process.Start() returned false.");
+					Debug.LogError("[SteamItchIoDeployer] Process.Start() returned false.");
 					return false;
 				}
 
@@ -201,7 +201,7 @@ namespace SteamDeployer
 			}
 			catch (Exception ex)
 			{
-				Debug.LogError($"[SteamDeployer] Failed to start process: {ex.Message}");
+				Debug.LogError($"[SteamItchIoDeployer] Failed to start process: {ex.Message}");
 				return false;
 			}
 		}
@@ -245,12 +245,12 @@ namespace SteamDeployer
 				if (_process != null && !_process.HasExited)
 				{
 					_process.Kill();
-					Debug.LogWarning("[SteamDeployer] Child process was forcefully terminated.");
+					Debug.LogWarning("[SteamItchIoDeployer] Child process was forcefully terminated.");
 				}
 			}
 			catch (Exception ex)
 			{
-				Debug.LogWarning($"[SteamDeployer] Exception during process kill: {ex.Message}");
+				Debug.LogWarning($"[SteamItchIoDeployer] Exception during process kill: {ex.Message}");
 			}
 		}
 

@@ -12,7 +12,7 @@ Unity Editor 外掛程式，可在同一個 EditorWindow 內完成一次建置�
 
 - 多平台部署：可勾選 **Steam**、**itch.io**，或兩者同時。
 - 共用 **Build & Upload** 流程：Unity 只建置一次，再依序上傳到各平台。
-- 分離平台設定資產：`SteamDeployConfig` 與 `ItchioDeployConfig`。
+- 分離平台設定資產：`SteamDeployConfig` 與 `ItchIoDeployConfig`。
 - 中段 UI 以分頁切換各平台的設定與認證。
 - 下方 log console 為共用，可連續顯示 Steam 與 itch.io 的輸出。
 - Steam 透過 VDF + `steamcmd` 上傳。
@@ -49,7 +49,7 @@ https://github.com/qwe321qwe321qwe321/unity-steam-itchio-deployer.git
 
 ### 手動安裝
 
-將整個 `Editor/SteamDeployer/` 資料夾複製至目標專案的任意 `Editor/` 目錄下。
+將整個 `Editor/SteamItchIoDeployer/` 資料夾複製至目標專案的任意 `Editor/` 目錄下。
 
 ---
 
@@ -95,7 +95,7 @@ Steam 分頁的認證欄位：
 
 ### 4. itch.io 設定
 
-`ItchioDeployConfig` 包含：
+`ItchIoDeployConfig` 包含：
 
 - `ButlerPath`
 - `Target`，格式為 `username/game`
@@ -189,13 +189,13 @@ https://itch.io/docs/butler/installing.html
 ## 架構
 
 ```text
-Editor/SteamDeployer/
+Editor/SteamItchIoDeployer/
 ├── SteamDeployConfig.cs        Steam 專用設定資產
-├── ItchioDeployConfig.cs       itch.io 專用設定資產
+├── ItchIoDeployConfig.cs       itch.io 專用設定資產
 ├── CryptographyHelper.cs       AES-256 加解密、EditorPrefs 密文管理
 ├── VDFGenerator.cs             生成 Steam 的 app_build.vdf 與 depot_build.vdf
 ├── CliProcessHandler.cs        通用 CLI 子程序執行器，供 steamcmd / butler 共用
-└── SteamDeployWindow.cs        主視窗 UI 與部署流程協調
+└── SteamItchIoDeployWindow.cs  主視窗 UI 與部署流程協調
 ```
 
 ---

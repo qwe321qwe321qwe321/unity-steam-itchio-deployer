@@ -4,7 +4,7 @@ using System.Text;
 using UnityEditor;
 using UnityEngine;
 
-namespace SteamDeployer
+namespace SteamItchIoDeployer
 {
     /// <summary>
     /// Provides AES-256-CBC symmetric encryption and decryption for securing deploy credentials.
@@ -80,7 +80,7 @@ namespace SteamDeployer
         {
             if (string.IsNullOrWhiteSpace(editorPrefsKey))
             {
-                Debug.LogError("[SteamDeployer] Cannot save encrypted value: missing EditorPrefs key.");
+                Debug.LogError("[SteamItchIoDeployer] Cannot save encrypted value: missing EditorPrefs key.");
                 return;
             }
 
@@ -113,7 +113,7 @@ namespace SteamDeployer
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[SteamDeployer] Encryption failed: {ex.Message}");
+                Debug.LogError($"[SteamItchIoDeployer] Encryption failed: {ex.Message}");
             }
         }
 
@@ -152,7 +152,7 @@ namespace SteamDeployer
             {
                 // Most common causes: different machine (different device ID → different key),
                 // corrupted EditorPrefs, or data from an older format.
-                Debug.LogWarning($"[SteamDeployer] Could not decrypt stored password " +
+                Debug.LogWarning($"[SteamItchIoDeployer] Could not decrypt stored password " +
                                  $"(may be from a different machine): {ex.Message}");
                 return null;
             }
