@@ -51,8 +51,18 @@ namespace SteamItchIoDeployer
 		private float _progressValue;
 
 		private BuildDeployConfig _buildDeployConfig;
-		private SteamDeployConfig _steamConfig;
-		private ItchIoDeployConfig _itchIoConfig;
+
+		private SteamDeployConfig _steamConfig
+		{
+			get => _buildDeployConfig?.SteamConfig;
+			set { if (_buildDeployConfig != null) _buildDeployConfig.SteamConfig = value; }
+		}
+
+		private ItchIoDeployConfig _itchIoConfig
+		{
+			get => _buildDeployConfig?.ItchIoConfig;
+			set { if (_buildDeployConfig != null) _buildDeployConfig.ItchIoConfig = value; }
+		}
 
 		private PlatformTab _selectedTab = PlatformTab.Steam;
 
@@ -241,17 +251,33 @@ namespace SteamItchIoDeployer
 
 				using (new EditorGUI.DisabledScope(locked))
 				{
-					_buildDeployConfig = (BuildDeployConfig)EditorGUILayout.ObjectField("Build/Deploy Config", _buildDeployConfig, typeof(BuildDeployConfig), false);
+					using (var check = new EditorGUI.ChangeCheckScope())
+					{
+						_buildDeployConfig = (BuildDeployConfig)EditorGUILayout.ObjectField("Build/Deploy Config", _buildDeployConfig, typeof(BuildDeployConfig), false);
+						if (check.changed)
+							EnsureBuildDeployDefaults();
+					}
 					if (_buildDeployConfig == null && GUILayout.Button("Create Build/Deploy Config Asset"))
 						CreateBuildDeployConfigAsset();
 
-					_steamConfig = (SteamDeployConfig)EditorGUILayout.ObjectField("Steam Config", _steamConfig, typeof(SteamDeployConfig), false);
-					if (_steamConfig == null && GUILayout.Button("Create Steam Config Asset"))
-						CreateSteamConfigAsset();
+					if (_buildDeployConfig != null)
+					{
+						using (var check = new EditorGUI.ChangeCheckScope())
+						{
+							EditorGUI.indentLevel++;
+							_buildDeployConfig.SteamConfig = (SteamDeployConfig)EditorGUILayout.ObjectField("Steam Config", _buildDeployConfig.SteamConfig, typeof(SteamDeployConfig), false);
+							if (_buildDeployConfig.SteamConfig == null && GUILayout.Button("Create Steam Config Asset"))
+								CreateSteamConfigAsset();
 
-					_itchIoConfig = (ItchIoDeployConfig)EditorGUILayout.ObjectField("itch.io Config", _itchIoConfig, typeof(ItchIoDeployConfig), false);
-					if (_itchIoConfig == null && GUILayout.Button("Create itch.io Config Asset"))
-						CreateItchIoConfigAsset();
+							_buildDeployConfig.ItchIoConfig = (ItchIoDeployConfig)EditorGUILayout.ObjectField("itch.io Config", _buildDeployConfig.ItchIoConfig, typeof(ItchIoDeployConfig), false);
+							if (_buildDeployConfig.ItchIoConfig == null && GUILayout.Button("Create itch.io Config Asset"))
+								CreateItchIoConfigAsset();
+							EditorGUI.indentLevel--;
+
+							if (check.changed)
+								SaveConfig(_buildDeployConfig, refreshExecutables: true);
+						}
+					}
 				}
 			}
 			EditorGUILayout.Space(3);
@@ -1790,14 +1816,6 @@ namespace SteamItchIoDeployer
 			string[] buildDeployGuids = AssetDatabase.FindAssets("t:BuildDeployConfig");
 			if (buildDeployGuids.Length > 0)
 				_buildDeployConfig = AssetDatabase.LoadAssetAtPath<BuildDeployConfig>(AssetDatabase.GUIDToAssetPath(buildDeployGuids[0]));
-
-			string[] steamGuids = AssetDatabase.FindAssets("t:SteamDeployConfig");
-			if (steamGuids.Length > 0)
-				_steamConfig = AssetDatabase.LoadAssetAtPath<SteamDeployConfig>(AssetDatabase.GUIDToAssetPath(steamGuids[0]));
-
-			string[] itchGuids = AssetDatabase.FindAssets("t:ItchIoDeployConfig");
-			if (itchGuids.Length > 0)
-				_itchIoConfig = AssetDatabase.LoadAssetAtPath<ItchIoDeployConfig>(AssetDatabase.GUIDToAssetPath(itchGuids[0]));
 		}
 
 		private void EnsureBuildDeployDefaults()
@@ -1838,10 +1856,15 @@ namespace SteamItchIoDeployer
 			const string subFolder = "Assets/Editor/SteamItchIoDeployer";
 			EnsureEditorFolders(subFolder);
 			string path = $"{subFolder}/SteamDeployConfig.asset";
-			_steamConfig = CreateInstance<SteamDeployConfig>();
-			AssetDatabase.CreateAsset(_steamConfig, path);
+			var config = CreateInstance<SteamDeployConfig>();
+			AssetDatabase.CreateAsset(config, path);
 			AssetDatabase.SaveAssets();
-			EditorGUIUtility.PingObject(_steamConfig);
+			EditorGUIUtility.PingObject(config);
+			if (_buildDeployConfig != null)
+			{
+				_buildDeployConfig.SteamConfig = config;
+				SaveConfig(_buildDeployConfig, refreshExecutables: true);
+			}
 		}
 
 		private void CreateItchIoConfigAsset()
@@ -1849,10 +1872,15 @@ namespace SteamItchIoDeployer
 			const string subFolder = "Assets/Editor/SteamItchIoDeployer";
 			EnsureEditorFolders(subFolder);
 			string path = $"{subFolder}/ItchIoDeployConfig.asset";
-			_itchIoConfig = CreateInstance<ItchIoDeployConfig>();
-			AssetDatabase.CreateAsset(_itchIoConfig, path);
+			var config = CreateInstance<ItchIoDeployConfig>();
+			AssetDatabase.CreateAsset(config, path);
 			AssetDatabase.SaveAssets();
-			EditorGUIUtility.PingObject(_itchIoConfig);
+			EditorGUIUtility.PingObject(config);
+			if (_buildDeployConfig != null)
+			{
+				_buildDeployConfig.ItchIoConfig = config;
+				SaveConfig(_buildDeployConfig, refreshExecutables: true);
+			}
 		}
 
 		private static void EnsureEditorFolders(string subFolder)

@@ -28,5 +28,11 @@ namespace SteamItchIoDeployer
 		[Tooltip("Optional Unity 6+ Build Profile asset to activate before building. Leave empty to use the current active build settings.")]
 		public UnityEditor.Build.Profile.BuildProfile BuildProfile;
 	#endif
+
+		[Tooltip("Steam deployment configuration asset.")]
+		public SteamDeployConfig SteamConfig;
+
+		[Tooltip("itch.io deployment configuration asset.")]
+		public ItchIoDeployConfig ItchIoConfig;
 	}
 }
