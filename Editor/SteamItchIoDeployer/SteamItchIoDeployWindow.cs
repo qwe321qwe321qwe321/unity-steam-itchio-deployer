@@ -110,7 +110,7 @@ namespace SteamItchIoDeployer
 		public static void OpenWindow()
 		{
 			var window = GetWindow<SteamItchIoDeployWindow>("Steam itch.io Deployer");
-			window.minSize = new Vector2(560, 760);
+			window.minSize = new Vector2(350, 760);
 			window.Show();
 		}
 
