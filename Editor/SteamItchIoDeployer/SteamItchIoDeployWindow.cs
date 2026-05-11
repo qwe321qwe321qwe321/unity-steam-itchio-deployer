@@ -44,6 +44,8 @@ namespace SteamItchIoDeployer
 		private const string SteamPasswordCipherPrefsKey = "SteamDeployer_EncryptedPassword";
 		private const string ItchIoSaveApiKeyPrefsKey = "SteamDeployer_ItchioSaveApiKey";
 		private const string ItchIoApiKeyCipherPrefsKey = "SteamDeployer_EncryptedItchioApiKey";
+		private const string ShowInfoBoxesPrefsKey = "SteamDeployer_ShowInfoBoxes";
+		private const string LastConfigGuidPrefsKey = "SteamDeployer_LastConfigGuid";
 		private const int MaxLogBufferChars = 60_000;
 
 		private DeployState _state = DeployState.Setup;
@@ -75,6 +77,7 @@ namespace SteamItchIoDeployer
 
 		private bool _authFoldout = true;
 		private bool _platformSettingsFoldout = true;
+		private bool _showInfoBoxes = true;
 
 		private bool _isDownloadingSteamCmd;
 		private bool _isDownloadingButler;
@@ -114,6 +117,20 @@ namespace SteamItchIoDeployer
 			window.Show();
 		}
 
+		public static void OpenWindowWithConfig(BuildDeployConfig config)
+		{
+			var window = GetWindow<SteamItchIoDeployWindow>("Steam itch.io Deployer");
+			window.minSize = new Vector2(350, 760);
+			window.Show();
+			if (config != null)
+			{
+				window._buildDeployConfig = config;
+				SaveLastConfigGuid(config);
+				window.EnsureBuildDeployDefaults();
+				window.RefreshExecutableExists();
+			}
+		}
+
 		private void OnEnable()
 		{
 			TryLoadConfigs();
@@ -128,6 +145,7 @@ namespace SteamItchIoDeployer
 			}
 
 			_saveItchIoApiKey = EditorPrefs.GetBool(GetProjectScopedPrefsKey(ItchIoSaveApiKeyPrefsKey), false);
+			_showInfoBoxes = EditorPrefs.GetBool(GetProjectScopedPrefsKey(ShowInfoBoxesPrefsKey), true);
 			if (CryptographyHelper.HasStoredValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey)))
 				_itchIoApiKey = CryptographyHelper.LoadDecryptedValue(GetProjectScopedPrefsKey(ItchIoApiKeyCipherPrefsKey)) ?? "";
 
@@ -188,6 +206,18 @@ namespace SteamItchIoDeployer
 			EditorGUILayout.LabelField("  Build once, upload to Steam and/or itch.io", EditorStyles.miniLabel);
 			EditorGUILayout.Space(4);
 
+			using (new GUILayout.HorizontalScope())
+			{
+				GUILayout.FlexibleSpace();
+				using (var check = new EditorGUI.ChangeCheckScope())
+				{
+					_showInfoBoxes = EditorGUILayout.ToggleLeft("Show hints", _showInfoBoxes, GUILayout.Width(95));
+					if (check.changed)
+						EditorPrefs.SetBool(GetProjectScopedPrefsKey(ShowInfoBoxesPrefsKey), _showInfoBoxes);
+				}
+			}
+			EditorGUILayout.Space(4);
+
 			bool locked = _state == DeployState.Building
 				|| _state == DeployState.Uploading
 				|| _state == DeployState.TestingLogin
@@ -215,7 +245,7 @@ namespace SteamItchIoDeployer
 			using (new GUILayout.VerticalScope(_boxStyle))
 			{
 				EditorGUILayout.LabelField("Deploy Targets", EditorStyles.boldLabel);
-				EditorGUILayout.HelpBox("Select one or more upload targets. Build runs once, then uploads to each selected platform in sequence.", MessageType.None);
+				InfoBox("Select one or more upload targets. Build runs once, then uploads to each selected platform in sequence.");
 
 				DeployTargets selectedTargets = GetSelectedTargets();
 				bool steam = (selectedTargets & DeployTargets.Steam) != 0;
@@ -255,10 +285,16 @@ namespace SteamItchIoDeployer
 					{
 						_buildDeployConfig = (BuildDeployConfig)EditorGUILayout.ObjectField("Build/Deploy Config", _buildDeployConfig, typeof(BuildDeployConfig), false);
 						if (check.changed)
+						{
 							EnsureBuildDeployDefaults();
+							SaveLastConfigGuid(_buildDeployConfig);
+						}
 					}
 					if (_buildDeployConfig == null && GUILayout.Button("Create Build/Deploy Config Asset"))
+					{
 						CreateBuildDeployConfigAsset();
+						SaveLastConfigGuid(_buildDeployConfig);
+					}
 
 					if (_buildDeployConfig != null)
 					{
@@ -397,13 +433,13 @@ namespace SteamItchIoDeployer
 			}
 
 			if (!canTestLogin)
-				EditorGUILayout.HelpBox("Fill in username, password, and SteamCMD path to enable Steam login testing.", MessageType.None);
+				InfoBox("Fill in username, password, and SteamCMD path to enable Steam login testing.");
 		}
 
 		private void DrawItchIoAuthFields()
 		{
 			EditorGUILayout.Space(4);
-			EditorGUILayout.HelpBox("Use a butler API key. The upload process injects it as BUTLER_API_KEY for the child process.", MessageType.None);
+			InfoBox("Use a butler API key. The upload process injects it as BUTLER_API_KEY for the child process.");
 			using (new GUILayout.HorizontalScope())
 			{
 				GUILayout.FlexibleSpace();
@@ -471,6 +507,12 @@ namespace SteamItchIoDeployer
 				EditorGUILayout.LabelField($"  Target: {_itchIoConfig.Target}:{_itchIoConfig.Channel}", EditorStyles.miniLabel);
 		}
 
+		private void InfoBox(string message)
+		{
+			if (_showInfoBoxes)
+				EditorGUILayout.HelpBox(message, MessageType.None);
+		}
+
 		private void DrawSteamSettingsFields()
 		{
 			if (_steamConfig == null)
@@ -490,7 +532,7 @@ namespace SteamItchIoDeployer
 					_steamConfig.BuildBranch = EditorGUILayout.TextField("Branch", _steamConfig.BuildBranch);
 
 				_steamConfig.BuildDescription = EditorGUILayout.TextField("Build Description", _steamConfig.BuildDescription);
-				EditorGUILayout.HelpBox("Description supports {Version}, {Date}, {DateTime} macros.", MessageType.None);
+				InfoBox("Description supports {Version}, {Date}, {DateTime} macros.");
 				_steamConfig.IgnoreFiles = EditorGUILayout.TextField("Ignore Files", _steamConfig.IgnoreFiles);
 
 				EditorGUILayout.Space(6);
@@ -536,10 +578,9 @@ namespace SteamItchIoDeployer
 						"The itch.io project to upload to, in the form username/game. Example: leafo/celestial-roads. " +
 						"This must match the exact URL slug of an already-created itch.io project page."),
 					_itchIoConfig.Target);
-				EditorGUILayout.HelpBox(
+				InfoBox(
 					"Target tells butler which itch.io project receives the build. Use the exact page address slug in the form username/game. " +
-					"Example: if the page URL is https://myname.itch.io/my-cool-game, the target is myname/my-cool-game.",
-					MessageType.None);
+					"Example: if the page URL is https://myname.itch.io/my-cool-game, the target is myname/my-cool-game.");
 
 				_itchIoConfig.Channel = EditorGUILayout.TextField(
 					new GUIContent(
@@ -547,41 +588,37 @@ namespace SteamItchIoDeployer
 						"The slot name inside the itch.io project. Common examples: windows, windows-beta, linux, mac-stable. " +
 						"Channel names influence initial platform tagging on itch.io."),
 					_itchIoConfig.Channel);
-				EditorGUILayout.HelpBox(
+				InfoBox(
 					"Channel is the destination slot inside that itch.io project. Re-uploading to the same channel updates that slot. " +
 					"Names such as windows, linux, mac, windows-beta, or win-stable are typical. If the name contains win/windows, linux, or mac/osx, itch.io uses that to infer platform tags. " +
-					"Use lower-case kebab-case when possible. For browser builds, you may use a name like html5, web, or browser, but note that browser-playable / HTML status is not controlled by the channel name alone. After the first upload, you still need to configure the itch.io project page as HTML / Playable in browser from the website.",
-					MessageType.None);
+					"Use lower-case kebab-case when possible. For browser builds, you may use a name like html5, web, or browser, but note that browser-playable / HTML status is not controlled by the channel name alone. After the first upload, you still need to configure the itch.io project page as HTML / Playable in browser from the website.");
 
 				_itchIoConfig.UserVersion = EditorGUILayout.TextField(
 					new GUIContent(
 						"User Version",
 						"Optional human-readable build version passed as butler --userversion. Useful for showing your own version label instead of only itch.io's internal build number."),
 					_itchIoConfig.UserVersion);
-				EditorGUILayout.HelpBox(
+				InfoBox(
 					"User Version is the build label visible to you and your players, for example 1.2.0, 2026.05.03, or demo-7. " +
-					"It is passed to butler as --userversion. Supports {Version}, {Date}, and {DateTime} macros, so {Version} usually maps nicely to Application.version.",
-					MessageType.None);
+					"It is passed to butler as --userversion. Supports {Version}, {Date}, and {DateTime} macros, so {Version} usually maps nicely to Application.version.");
 				_itchIoConfig.IgnoreFiles = EditorGUILayout.TextField("Ignore Files", _itchIoConfig.IgnoreFiles);
 				_itchIoConfig.Hidden = EditorGUILayout.Toggle(
 					new GUIContent(
 						"Hidden First Push",
 						"Reserved option for hiding the first upload on a newly created channel. Some butler versions do not support this flag."),
 					_itchIoConfig.Hidden);
-				EditorGUILayout.HelpBox(
+				InfoBox(
 					"Intended meaning: keep the first upload to a brand-new channel hidden so it does not become immediately visible to players. " +
-					"However, some butler builds do not support the hidden-channel flag. For compatibility, the current tool keeps this setting as informational only and does not pass a hidden flag during upload.",
-					MessageType.None);
+					"However, some butler builds do not support the hidden-channel flag. For compatibility, the current tool keeps this setting as informational only and does not pass a hidden flag during upload.");
 
 				_itchIoConfig.IfChanged = EditorGUILayout.Toggle(
 					new GUIContent(
 						"Upload Only If Changed",
 						"Passes --if-changed to butler so no new build is created when the local contents are identical to the latest upload on that channel."),
 					_itchIoConfig.IfChanged);
-				EditorGUILayout.HelpBox(
+				InfoBox(
 					"Upload Only If Changed skips the upload entirely when the selected build folder is identical to the latest build already on that channel. " +
-					"Use it to reduce no-op uploads in repetitive release workflows. If you always want a fresh build entry even when files did not change, leave this off.",
-					MessageType.None);
+					"Use it to reduce no-op uploads in repetitive release workflows. If you always want a fresh build entry even when files did not change, leave this off.");
 
 				EditorGUILayout.Space(6);
 				EditorGUILayout.LabelField("Butler Executable", EditorStyles.boldLabel);
@@ -807,9 +844,9 @@ namespace SteamItchIoDeployer
 					if (!hasTargets)
 						EditorGUILayout.HelpBox("Select at least one target platform.", MessageType.Warning);
 					else if (!HasAnyBuildOutputPath())
-						EditorGUILayout.HelpBox("Set the shared build output path to enable Build.", MessageType.None);
+						InfoBox("Set the shared build output path to enable Build.");
 					else if (!canUpload)
-						EditorGUILayout.HelpBox("Upload needs valid platform settings and an existing build output in the selected build output path.", MessageType.None);
+						InfoBox("Upload needs valid platform settings and an existing build output in the selected build output path.");
 				}
 			}
 			EditorGUILayout.Space(3);
@@ -1813,6 +1850,21 @@ namespace SteamItchIoDeployer
 
 		private void TryLoadConfigs()
 		{
+			string lastGuid = EditorPrefs.GetString(GetProjectScopedPrefsKey(LastConfigGuidPrefsKey), "");
+			if (!string.IsNullOrEmpty(lastGuid))
+			{
+				string assetPath = AssetDatabase.GUIDToAssetPath(lastGuid);
+				if (!string.IsNullOrEmpty(assetPath))
+				{
+					var config = AssetDatabase.LoadAssetAtPath<BuildDeployConfig>(assetPath);
+					if (config != null)
+					{
+						_buildDeployConfig = config;
+						return;
+					}
+				}
+			}
+
 			string[] buildDeployGuids = AssetDatabase.FindAssets("t:BuildDeployConfig");
 			if (buildDeployGuids.Length > 0)
 				_buildDeployConfig = AssetDatabase.LoadAssetAtPath<BuildDeployConfig>(AssetDatabase.GUIDToAssetPath(buildDeployGuids[0]));
@@ -1889,6 +1941,18 @@ namespace SteamItchIoDeployer
 				AssetDatabase.CreateFolder("Assets", "Editor");
 			if (!AssetDatabase.IsValidFolder(subFolder))
 				AssetDatabase.CreateFolder("Assets/Editor", "SteamItchIoDeployer");
+		}
+
+		private static void SaveLastConfigGuid(BuildDeployConfig config)
+		{
+			if (config == null)
+			{
+				EditorPrefs.DeleteKey(GetProjectScopedPrefsKey(LastConfigGuidPrefsKey));
+				return;
+			}
+			string guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(config));
+			if (!string.IsNullOrEmpty(guid))
+				EditorPrefs.SetString(GetProjectScopedPrefsKey(LastConfigGuidPrefsKey), guid);
 		}
 
 		private void SaveConfig(UnityEngine.Object config, bool refreshExecutables)
