@@ -532,7 +532,7 @@ namespace SteamItchIoDeployer
 					_steamConfig.BuildBranch = EditorGUILayout.TextField("Branch", _steamConfig.BuildBranch);
 
 				_steamConfig.BuildDescription = EditorGUILayout.TextField("Build Description", _steamConfig.BuildDescription);
-				InfoBox("Description supports {Version}, {Date}, {DateTime} macros.");
+				InfoBox("Description supports {Version}, {Date}, {DateTime}, {GitSHA} macros.");
 				_steamConfig.IgnoreFiles = EditorGUILayout.TextField("Ignore Files", _steamConfig.IgnoreFiles);
 
 				EditorGUILayout.Space(6);
@@ -1683,7 +1683,37 @@ namespace SteamItchIoDeployer
 			return template
 				.Replace("{Version}", Application.version)
 				.Replace("{Date}", DateTime.Now.ToString("yyyy-MM-dd"))
-				.Replace("{DateTime}", DateTime.Now.ToString("yyyy-MM-dd-HH-mm-ss"));
+				.Replace("{DateTime}", DateTime.Now.ToString("yyyy-MM-dd-HH-mm-ss"))
+				.Replace("{GitSHA}", ResolveGitSha());
+		}
+
+		private static string ResolveGitSha()
+		{
+			try
+			{
+				var psi = new System.Diagnostics.ProcessStartInfo
+				{
+					FileName               = "git",
+					Arguments              = "rev-parse HEAD",
+					UseShellExecute        = false,
+					CreateNoWindow         = true,
+					RedirectStandardOutput = true,
+					RedirectStandardError  = true,
+					WorkingDirectory       = System.IO.Path.GetFullPath("."),
+				};
+
+				using (var proc = System.Diagnostics.Process.Start(psi))
+				{
+					if (proc == null) return "NO_SHA";
+					string output = proc.StandardOutput.ReadToEnd().Trim();
+					proc.WaitForExit();
+					return proc.ExitCode == 0 && output.Length > 0 ? output : "NO_SHA";
+				}
+			}
+			catch
+			{
+				return "NO_SHA";
+			}
 		}
 
 		private static string[] SplitIgnorePatterns(string csv)

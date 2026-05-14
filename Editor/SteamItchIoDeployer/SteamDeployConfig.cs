@@ -35,7 +35,8 @@ namespace SteamItchIoDeployer
         public string IgnoreFiles = "*.pdb, _BurstDebugInformation_DoNotShip";
 
         [Tooltip("Human-readable description for this build shown in the Steamworks build history. " +
-                 "Supports {Version} and {Date} macro substitution (e.g., 'v{Version} built on {Date}').")]
-        public string BuildDescription = "v{Version} - {Date}";
+                 "Supports {Version}, {Date}, {DateTime}, and {GitSHA} macro substitution. " +
+                 "{GitSHA} is resolved from 'git rev-parse HEAD'; falls back to 'NO_SHA' if git is unavailable or the project is not a repository.")]
+        public string BuildDescription = "v{Version} - {Date} - {GitSHA}";
     }
 }
