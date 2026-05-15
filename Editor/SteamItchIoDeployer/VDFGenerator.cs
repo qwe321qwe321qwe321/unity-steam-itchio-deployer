@@ -146,16 +146,17 @@ namespace SteamItchIoDeployer
 
         // ─── String Helpers ───────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Escapes a Windows filesystem path for embedding in a VDF string value.
-        /// VDF treats backslash as an escape character, so each \ must become \\.
-        /// Forward slashes are NOT converted — SteamCMD accepts both on all platforms.
-        /// </summary>
         private static string EscapePathForVdf(string path)
         {
             if (string.IsNullOrEmpty(path)) return path;
-            // Normalize to backslashes first (Windows convention), then double-escape them.
+#if UNITY_EDITOR_WIN
+            // VDF treats backslash as an escape character, so normalize to backslashes
+            // then double-escape each one.
             return path.Replace("/", "\\").Replace("\\", "\\\\");
+#else
+            // SteamCMD accepts forward slashes on macOS/Linux; no escaping needed.
+            return path.Replace("\\", "/");
+#endif
         }
 
         /// <summary>

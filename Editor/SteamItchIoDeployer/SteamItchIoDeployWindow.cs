@@ -1549,6 +1549,7 @@ namespace SteamItchIoDeployer
 
 			return Directory.GetFiles(path, "*.exe", SearchOption.TopDirectoryOnly).Length > 0
 				|| Directory.GetFiles(path, "*.app", SearchOption.TopDirectoryOnly).Length > 0
+				|| Directory.GetDirectories(path, "*.app", SearchOption.TopDirectoryOnly).Length > 0
 				|| Directory.GetFiles(path, "*.x86_64", SearchOption.TopDirectoryOnly).Length > 0
 				|| Directory.GetFiles(path, "*.x86", SearchOption.TopDirectoryOnly).Length > 0;
 		}
@@ -2054,10 +2055,17 @@ namespace SteamItchIoDeployer
 		{
 			if (_steamConfig == null) return;
 
+			string downloadUrl = GetSteamCmdDownloadUrl();
+			if (string.IsNullOrEmpty(downloadUrl))
+			{
+				EditorUtility.DisplayDialog("Unsupported Platform", "Automatic SteamCMD download is only configured for Windows and macOS editors.", "OK");
+				return;
+			}
+
 			string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
 			string steamCmdDir = Path.Combine(projectRoot, "steamcmd");
-			string zipPath = Path.Combine(steamCmdDir, "steamcmd_download.zip");
-			string steamCmdExePath = Path.Combine(steamCmdDir, "steamcmd.exe");
+			string executableName = GetSteamCmdExecutableName();
+			string steamCmdExePath = Path.Combine(steamCmdDir, executableName);
 
 			Directory.CreateDirectory(steamCmdDir);
 			_isDownloadingSteamCmd = true;
@@ -2065,10 +2073,12 @@ namespace SteamItchIoDeployer
 
 			Task.Run(() =>
 			{
+#if UNITY_EDITOR_WIN
+				string archivePath = Path.Combine(steamCmdDir, "steamcmd_download.zip");
 				using (var webClient = new WebClient())
-					webClient.DownloadFile("https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip", zipPath);
+					webClient.DownloadFile(downloadUrl, archivePath);
 
-				using (var archive = ZipFile.OpenRead(zipPath))
+				using (var archive = ZipFile.OpenRead(archivePath))
 				{
 					foreach (ZipArchiveEntry entry in archive.Entries)
 					{
@@ -2083,7 +2093,38 @@ namespace SteamItchIoDeployer
 					}
 				}
 
-				File.Delete(zipPath);
+				File.Delete(archivePath);
+#else
+				string archivePath = Path.Combine(steamCmdDir, "steamcmd_download.tar.gz");
+				using (var webClient = new WebClient())
+					webClient.DownloadFile(downloadUrl, archivePath);
+
+				var tarInfo = new System.Diagnostics.ProcessStartInfo
+				{
+					FileName = "/usr/bin/tar",
+					Arguments = $"-xzf \"{archivePath}\" -C \"{steamCmdDir}\"",
+					UseShellExecute = false,
+					CreateNoWindow = true,
+				};
+				using (var process = System.Diagnostics.Process.Start(tarInfo))
+					process?.WaitForExit();
+
+				File.Delete(archivePath);
+
+				try
+				{
+					var chmod = new System.Diagnostics.ProcessStartInfo
+					{
+						FileName = "/bin/chmod",
+						Arguments = $"+x \"{steamCmdExePath}\"",
+						UseShellExecute = false,
+						CreateNoWindow = true,
+					};
+					using (var process = System.Diagnostics.Process.Start(chmod))
+						process?.WaitForExit();
+				}
+				catch { }
+#endif
 			}).ContinueWith(downloadTask =>
 			{
 				EditorApplication.delayCall += () =>
@@ -2180,6 +2221,26 @@ namespace SteamItchIoDeployer
 					AppendPlatformLog(DeployTargets.ItchIo, $"butler installed -> {butlerDir}", false);
 				};
 			});
+		}
+
+		private static string GetSteamCmdExecutableName()
+		{
+#if UNITY_EDITOR_WIN
+			return "steamcmd.exe";
+#else
+			return "steamcmd.sh";
+#endif
+		}
+
+		private static string GetSteamCmdDownloadUrl()
+		{
+#if UNITY_EDITOR_WIN
+			return "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
+#elif UNITY_EDITOR_OSX
+			return "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz";
+#else
+			return null;
+#endif
 		}
 
 		private static string GetButlerExecutableName()
