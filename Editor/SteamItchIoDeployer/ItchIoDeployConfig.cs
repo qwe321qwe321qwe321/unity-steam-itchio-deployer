@@ -9,7 +9,8 @@ namespace SteamItchIoDeployer
 	[CreateAssetMenu(fileName = "ItchIoDeployConfig", menuName = "Steam itch.io Deployer/itch.io Deploy Config")]
 	public class ItchIoDeployConfig : ScriptableObject
 	{
-		[Tooltip("Absolute filesystem path to the butler executable on this machine.")]
+		[Tooltip("Path to the butler executable, WITHOUT file extension. " +
+			"The .exe extension is appended automatically on Windows; no extension is used on macOS and Linux.")]
 		public string ButlerPath = "";
 
 		[Tooltip("itch.io target in the form username/game.")]

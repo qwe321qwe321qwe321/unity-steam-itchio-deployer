@@ -27,6 +27,12 @@ namespace SteamItchIoDeployer
 			Failed,
 		}
 
+		private enum MainTab
+		{
+			DeployConfig,
+			BatchDeploy,
+		}
+
 		private enum PlatformTab
 		{
 			Steam,
@@ -46,13 +52,23 @@ namespace SteamItchIoDeployer
 		private const string ItchIoApiKeyCipherPrefsKey = "SteamDeployer_EncryptedItchioApiKey";
 		private const string ShowInfoBoxesPrefsKey = "SteamDeployer_ShowInfoBoxes";
 		private const string LastConfigGuidPrefsKey = "SteamDeployer_LastConfigGuid";
+		private const string BatchConfigGuidsPrefsKey = "SteamDeployer_BatchConfigGuids";
 		private const int MaxLogBufferChars = 60_000;
+
+		private MainTab _mainTab = MainTab.DeployConfig;
 
 		private DeployState _state = DeployState.Setup;
 		private string _taskLabel = "";
 		private float _progressValue;
 
 		private BuildDeployConfig _buildDeployConfig;
+
+		// Batch build state
+		private readonly List<BuildDeployConfig> _batchConfigs = new List<BuildDeployConfig>();
+		private Vector2 _batchListScroll;
+		private int _batchCurrentIndex;
+		private bool _isBatchMode;
+		private bool _isBatchUploadOnlyMode;
 
 		private SteamDeployConfig _steamConfig
 		{
@@ -134,8 +150,10 @@ namespace SteamItchIoDeployer
 		private void OnEnable()
 		{
 			TryLoadConfigs();
+			MigrateAllConfigPaths();
 			RefreshExecutableExists();
 			EnsureBuildDeployDefaults();
+			LoadBatchConfigs();
 
 			_steamUsername = EditorPrefs.GetString(GetProjectScopedPrefsKey(SteamUsernamePrefsKey), "");
 			if (CryptographyHelper.HasStoredValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey)))
@@ -223,21 +241,157 @@ namespace SteamItchIoDeployer
 				|| _state == DeployState.TestingLogin
 				|| _state == DeployState.WaitingForSteamGuard;
 
-			using (new EditorGUI.DisabledScope(locked))
+			using (new GUILayout.HorizontalScope())
 			{
-				DrawTargetSelectionSection();
+				using (new EditorGUI.DisabledScope(locked))
+				{
+					if (GUILayout.Toggle(_mainTab == MainTab.DeployConfig, "Deploy Config", EditorStyles.toolbarButton))
+						_mainTab = MainTab.DeployConfig;
+					if (GUILayout.Toggle(_mainTab == MainTab.BatchDeploy, "Batch Build / Deploy", EditorStyles.toolbarButton))
+						_mainTab = MainTab.BatchDeploy;
+				}
+			}
+			EditorGUILayout.Space(4);
+
+			if (_mainTab == MainTab.BatchDeploy)
+			{
+				DrawBatchTab(locked);
+			}
+			else
+			{
+				using (new EditorGUI.DisabledScope(locked))
+					DrawTargetSelectionSection();
+
+				DrawConfigSection(locked);
+				DrawPlatformTabs(locked);
+				DrawAuthSection(locked);
+				DrawPlatformSettingsSection(locked);
+				DrawBuildAndUploadSection(locked);
 			}
 
-			DrawConfigSection(locked);
-			DrawPlatformTabs(locked);
-			DrawAuthSection(locked);
-			DrawPlatformSettingsSection(locked);
-
-			DrawBuildAndUploadSection(locked);
 			DrawResultBanner();
 			DrawLogSection();
 
 			EditorGUILayout.EndScrollView();
+		}
+
+		private void DrawBatchTab(bool locked)
+		{
+			using (new GUILayout.VerticalScope(_boxStyle))
+			{
+				EditorGUILayout.LabelField("Batch Build & Upload", EditorStyles.boldLabel);
+				InfoBox("Add multiple Build/Deploy configs. Each config will be built and uploaded in sequence using the credentials from the Deploy tab.");
+				EditorGUILayout.Space(4);
+
+				float listHeight = Mathf.Clamp(_batchConfigs.Count * 24f + 4f, 48f, 200f);
+				_batchListScroll = EditorGUILayout.BeginScrollView(_batchListScroll, GUILayout.Height(listHeight));
+				for (int i = 0; i < _batchConfigs.Count; i++)
+				{
+					using (new GUILayout.HorizontalScope())
+					{
+						EditorGUILayout.LabelField($"{i + 1}.", GUILayout.Width(22));
+						using (var check = new EditorGUI.ChangeCheckScope())
+						{
+							_batchConfigs[i] = (BuildDeployConfig)EditorGUILayout.ObjectField(_batchConfigs[i], typeof(BuildDeployConfig), false);
+							if (check.changed) SaveBatchConfigs();
+						}
+						using (new EditorGUI.DisabledScope(locked || i == 0))
+						{
+							if (GUILayout.Button("↑", GUILayout.Width(22)))
+							{
+								BuildDeployConfig swapTmp = _batchConfigs[i - 1];
+								_batchConfigs[i - 1] = _batchConfigs[i];
+								_batchConfigs[i] = swapTmp;
+								SaveBatchConfigs();
+							}
+						}
+						using (new EditorGUI.DisabledScope(locked || i == _batchConfigs.Count - 1))
+						{
+							if (GUILayout.Button("↓", GUILayout.Width(22)))
+							{
+								BuildDeployConfig swapTmp = _batchConfigs[i + 1];
+								_batchConfigs[i + 1] = _batchConfigs[i];
+								_batchConfigs[i] = swapTmp;
+								SaveBatchConfigs();
+							}
+						}
+						using (new EditorGUI.DisabledScope(locked))
+						{
+							if (GUILayout.Button("✕", GUILayout.Width(22)))
+							{
+								_batchConfigs.RemoveAt(i);
+								SaveBatchConfigs();
+								i--;
+							}
+						}
+					}
+				}
+				EditorGUILayout.EndScrollView();
+
+				EditorGUILayout.Space(2);
+				using (new EditorGUI.DisabledScope(locked))
+				{
+					if (GUILayout.Button("+ Add Config", GUILayout.Height(22)))
+					{
+						_batchConfigs.Add(null);
+						SaveBatchConfigs();
+					}
+				}
+
+				EditorGUILayout.Space(6);
+
+				if (locked && _isBatchMode)
+				{
+					string batchProgress = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] {_taskLabel}";
+					EditorGUILayout.LabelField(batchProgress, EditorStyles.centeredGreyMiniLabel);
+					EditorGUILayout.Space(4);
+					Rect bar = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none, GUILayout.Height(22));
+					EditorGUI.ProgressBar(bar, _progressValue, _taskLabel);
+					EditorGUILayout.Space(6);
+					if (GUILayout.Button("Cancel", GUILayout.Height(28)))
+						CancelOperation();
+				}
+				else
+				{
+					bool hasConfigs = _batchConfigs.Count > 0;
+					bool allAssigned = hasConfigs && _batchConfigs.TrueForAll(c => c != null);
+					using (new EditorGUI.DisabledScope(locked || !allAssigned))
+					{
+						if (GUILayout.Button("Batch Build Only", GUILayout.Height(20)))
+							EditorApplication.delayCall += StartBatchBuildOnly;
+					}
+					EditorGUILayout.Space(4);
+					
+					bool anyUploadable = allAssigned && GetBatchUploadableCount() > 0;
+					using (new EditorGUI.DisabledScope(locked || !anyUploadable))
+					{
+						if (GUILayout.Button("Batch Upload Only", GUILayout.Height(20)))
+							EditorApplication.delayCall += StartBatchUploadOnly;
+					}
+					DrawBatchUploadOnlyInfo(allAssigned);
+					
+					EditorGUILayout.Space(4);
+					
+					using (new EditorGUI.DisabledScope(locked || !allAssigned))
+					{
+						if (GUILayout.Button("Batch Build & Upload", _bigButtonStyle, GUILayout.Height(36)))
+							EditorApplication.delayCall += StartBatchDeployment;
+					}
+
+					if (!hasConfigs)
+						EditorGUILayout.HelpBox("Add at least one Build/Deploy config to run a batch.", MessageType.Info);
+					else if (!allAssigned)
+						EditorGUILayout.HelpBox("All config slots must be assigned before running.", MessageType.Warning);
+				}
+			}
+			EditorGUILayout.Space(3);
+
+			using (new GUILayout.VerticalScope(_boxStyle))
+			{
+				EditorGUILayout.LabelField("Credentials", EditorStyles.boldLabel);
+				EditorGUILayout.LabelField("Batch uses the same Steam credentials and itch.io API key set in the Deploy tab.", EditorStyles.miniLabel);
+			}
+			EditorGUILayout.Space(3);
 		}
 
 		private void DrawTargetSelectionSection()
@@ -546,7 +700,7 @@ namespace SteamItchIoDeployer
 						string browsedPath = EditorUtility.OpenFilePanel("Locate steamcmd executable", "", IsWindowsEditor() ? "exe" : "");
 						if (!string.IsNullOrEmpty(browsedPath))
 						{
-							_steamConfig.SteamCmdPath = NormalizeProjectRelativePath(browsedPath);
+							_steamConfig.SteamCmdPath = StripExecutableExtension(NormalizeProjectRelativePath(browsedPath));
 							RefreshExecutableExists();
 							EditorUtility.SetDirty(_steamConfig);
 							AssetDatabase.SaveAssets();
@@ -631,7 +785,7 @@ namespace SteamItchIoDeployer
 						string browsedPath = EditorUtility.OpenFilePanel("Locate butler executable", "", IsWindowsEditor() ? "exe" : "");
 						if (!string.IsNullOrEmpty(browsedPath))
 						{
-							_itchIoConfig.ButlerPath = NormalizeProjectRelativePath(browsedPath);
+							_itchIoConfig.ButlerPath = StripExecutableExtension(NormalizeProjectRelativePath(browsedPath));
 							RefreshExecutableExists();
 							EditorUtility.SetDirty(_itchIoConfig);
 							AssetDatabase.SaveAssets();
@@ -977,6 +1131,246 @@ namespace SteamItchIoDeployer
 			}
 		}
 
+		private void StartBatchBuildOnly()
+		{
+			if (_batchConfigs.Count == 0 || !_batchConfigs.TrueForAll(c => c != null)) return;
+
+			_isBatchMode = true;
+			_isBatchUploadOnlyMode = false;
+			_batchCurrentIndex = 0;
+			_mainTab = MainTab.BatchDeploy;
+			ClearAllLogBuffers();
+			_selectedLogTab = LogTab.General;
+			_isTestLoginContext = false;
+			_steamGuardCodeInput = "";
+			AppendGeneralLog($"=== BATCH BUILD START: {_batchConfigs.Count} config(s) ===", false);
+			RunNextBatchBuildItem();
+		}
+
+		private void RunNextBatchBuildItem()
+		{
+			if (_batchCurrentIndex >= _batchConfigs.Count)
+			{
+				_isBatchMode = false;
+				_state = DeployState.Success;
+				_progressValue = 1f;
+				_taskLabel = "Batch build complete!";
+				AppendGeneralLog($"=== BATCH BUILD COMPLETE: all {_batchConfigs.Count} config(s) succeeded ===", false);
+				Repaint();
+				return;
+			}
+
+			BuildDeployConfig cfg = _batchConfigs[_batchCurrentIndex];
+			_buildDeployConfig = cfg;
+			RefreshExecutableExists();
+
+			AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} ---", false);
+
+			_state = DeployState.Building;
+			_progressValue = (float)_batchCurrentIndex / _batchConfigs.Count;
+			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Building {cfg.name}...";
+			Repaint();
+
+			string buildOutputPath = ResolveSelectedBuildOutputPath();
+			if (!RunBuildIntoResolvedPath(buildOutputPath, out string failureReason))
+			{
+				_isBatchMode = false;
+				SetFailedState($"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] {failureReason}");
+				return;
+			}
+
+			AppendGeneralLog($"=== Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}] build complete ===", false);
+			_batchCurrentIndex++;
+			RunNextBatchBuildItem();
+		}
+
+		private void StartBatchDeployment()
+		{
+			if (_batchConfigs.Count == 0 || !_batchConfigs.TrueForAll(c => c != null)) return;
+
+			_isBatchMode = true;
+			_isBatchUploadOnlyMode = false;
+			_batchCurrentIndex = 0;
+			_mainTab = MainTab.BatchDeploy;
+			ClearAllLogBuffers();
+			_selectedLogTab = LogTab.General;
+			_isTestLoginContext = false;
+			_steamGuardCodeInput = "";
+			AppendGeneralLog($"=== BATCH START: {_batchConfigs.Count} config(s) ===", false);
+			RunNextBatchItem();
+		}
+
+		private void RunNextBatchItem()
+		{
+			if (_batchCurrentIndex >= _batchConfigs.Count)
+			{
+				_isBatchMode = false;
+				_state = DeployState.Success;
+				_progressValue = 1f;
+				_taskLabel = "Batch complete!";
+				AppendGeneralLog($"=== BATCH COMPLETE: all {_batchConfigs.Count} config(s) succeeded ===", false);
+				Repaint();
+				return;
+			}
+
+			BuildDeployConfig cfg = _batchConfigs[_batchCurrentIndex];
+			_buildDeployConfig = cfg;
+			RefreshExecutableExists();
+
+			AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} ---", false);
+
+			if (!ValidateSelectedTargetsForUpload(showDialogs: true, requireCredentials: true, requireBuildOutput: true))
+			{
+				_isBatchMode = false;
+				SetFailedState($"Validation failed for config [{_batchCurrentIndex + 1}]: {cfg.name}");
+				return;
+			}
+
+			_state = DeployState.Building;
+			_progressValue = 0.05f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
+			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Building {cfg.name}...";
+			Repaint();
+
+			PersistSavedCredentials();
+
+			string buildOutputPath = ResolveSelectedBuildOutputPath();
+			if (!RunBuildIntoResolvedPath(buildOutputPath, out string failureReason))
+			{
+				_isBatchMode = false;
+				SetFailedState($"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] {failureReason}");
+				return;
+			}
+
+			PrepareUploadSequence();
+			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Uploading {cfg.name}...";
+			_progressValue = 0.1f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
+			_state = DeployState.Uploading;
+			LaunchNextUploadTarget();
+		}
+
+		private void LoadBatchConfigs()
+		{
+			string saved = EditorPrefs.GetString(GetProjectScopedPrefsKey(BatchConfigGuidsPrefsKey), "");
+			_batchConfigs.Clear();
+			if (string.IsNullOrEmpty(saved)) return;
+			foreach (string guid in saved.Split(';'))
+			{
+				if (string.IsNullOrEmpty(guid)) continue;
+				string assetPath = AssetDatabase.GUIDToAssetPath(guid);
+				var cfg = AssetDatabase.LoadAssetAtPath<BuildDeployConfig>(assetPath);
+				_batchConfigs.Add(cfg);
+			}
+		}
+
+		private void SaveBatchConfigs()
+		{
+			var guids = new List<string>();
+			foreach (BuildDeployConfig cfg in _batchConfigs)
+			{
+				string guid = cfg != null ? AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(cfg)) : "";
+				guids.Add(guid);
+			}
+			EditorPrefs.SetString(GetProjectScopedPrefsKey(BatchConfigGuidsPrefsKey), string.Join(";", guids));
+		}
+
+		private int GetBatchUploadableCount()
+		{
+			int count = 0;
+			foreach (BuildDeployConfig cfg in _batchConfigs)
+			{
+				if (cfg == null) continue;
+				string resolved = ResolveConfigPath(cfg.BuildOutputPath);
+				if (!string.IsNullOrWhiteSpace(resolved) && Directory.Exists(resolved))
+					count++;
+			}
+			return count;
+		}
+
+		private void DrawBatchUploadOnlyInfo(bool allAssigned)
+		{
+			if (!allAssigned) return;
+			var missing = new List<string>();
+			foreach (BuildDeployConfig cfg in _batchConfigs)
+			{
+				if (cfg == null) continue;
+				string resolved = ResolveConfigPath(cfg.BuildOutputPath);
+				if (string.IsNullOrWhiteSpace(resolved) || !Directory.Exists(resolved))
+					missing.Add(cfg.name);
+			}
+			if (missing.Count == _batchConfigs.Count)
+			{
+				EditorGUILayout.HelpBox("No uploadable configs — build output path does not exist for any config.", MessageType.Warning);
+			}
+			else if (missing.Count > 0)
+			{
+				string names = string.Join(", ", missing);
+				EditorGUILayout.HelpBox($"Build output not found for: {names}. These configs will be skipped.", MessageType.Warning);
+			}
+			else
+			{
+				EditorGUILayout.LabelField("All configs have existing build output and are ready to upload.", EditorStyles.miniLabel);
+			}
+		}
+
+		private void StartBatchUploadOnly()
+		{
+			if (_batchConfigs.Count == 0 || !_batchConfigs.TrueForAll(c => c != null)) return;
+			if (GetBatchUploadableCount() == 0) return;
+
+			_isBatchMode = true;
+			_isBatchUploadOnlyMode = true;
+			_batchCurrentIndex = 0;
+			_mainTab = MainTab.BatchDeploy;
+			ClearAllLogBuffers();
+			_selectedLogTab = LogTab.General;
+			_isTestLoginContext = false;
+			_steamGuardCodeInput = "";
+			AppendGeneralLog($"=== BATCH UPLOAD START: {_batchConfigs.Count} config(s) ===", false);
+			RunNextBatchUploadItem();
+		}
+
+		private void RunNextBatchUploadItem()
+		{
+			if (_batchCurrentIndex >= _batchConfigs.Count)
+			{
+				_isBatchMode = false;
+				_state = DeployState.Success;
+				_progressValue = 1f;
+				_taskLabel = "Batch upload complete!";
+				AppendGeneralLog($"=== BATCH UPLOAD COMPLETE: all eligible config(s) processed ===", false);
+				Repaint();
+				return;
+			}
+
+			BuildDeployConfig cfg = _batchConfigs[_batchCurrentIndex];
+			_buildDeployConfig = cfg;
+			RefreshExecutableExists();
+
+			string resolved = ResolveSelectedBuildOutputPath();
+			if (string.IsNullOrWhiteSpace(resolved) || !Directory.Exists(resolved))
+			{
+				AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} — SKIPPED (build output not found: {resolved}) ---", false);
+				_batchCurrentIndex++;
+				RunNextBatchUploadItem();
+				return;
+			}
+
+			AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} ---", false);
+
+			if (!ValidateSelectedTargetsForUpload(showDialogs: true, requireCredentials: true, requireBuildOutput: true))
+			{
+				_isBatchMode = false;
+				SetFailedState($"Validation failed for config [{_batchCurrentIndex + 1}]: {cfg.name}");
+				return;
+			}
+
+			PrepareUploadSequence();
+			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Uploading {cfg.name}...";
+			_progressValue = 0.05f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
+			_state = DeployState.Uploading;
+			LaunchNextUploadTarget();
+		}
+
 		private void StartBuildOnly()
 		{
 			if (!EnsureBuildOutputPathForBuild()) return;
@@ -1067,6 +1461,17 @@ namespace SteamItchIoDeployer
 		{
 			if (_pendingUploads.Count == 0)
 			{
+				if (_isBatchMode)
+				{
+					AppendGeneralLog($"=== Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}] complete ===", false);
+					_batchCurrentIndex++;
+					if (_isBatchUploadOnlyMode)
+						RunNextBatchUploadItem();
+					else
+						RunNextBatchItem();
+					return;
+				}
+
 				_state = DeployState.Success;
 				_progressValue = 1f;
 				_taskLabel = "All uploads complete!";
@@ -1388,6 +1793,7 @@ namespace SteamItchIoDeployer
 			_processHandler = null;
 			_isProcessRunning = false;
 			_pendingUploads.Clear();
+			_isBatchMode = false;
 			_state = DeployState.Setup;
 			_taskLabel = "";
 			AppendGeneralLog("Operation was manually cancelled.", true);
@@ -1637,12 +2043,79 @@ namespace SteamItchIoDeployer
 
 		private string ResolveSteamCmdPath()
 		{
-			return ResolveConfigPath(_steamConfig?.SteamCmdPath);
+			string resolved = ResolveConfigPath(_steamConfig?.SteamCmdPath);
+			if (string.IsNullOrEmpty(resolved)) return resolved;
+			return resolved + GetSteamCmdExtension();
 		}
 
 		private string ResolveButlerPath()
 		{
-			return ResolveConfigPath(_itchIoConfig?.ButlerPath);
+			string resolved = ResolveConfigPath(_itchIoConfig?.ButlerPath);
+			if (string.IsNullOrEmpty(resolved)) return resolved;
+			return resolved + GetButlerExtension();
+		}
+
+		private static string GetSteamCmdExtension()
+		{
+#if UNITY_EDITOR_WIN
+			return ".exe";
+#elif UNITY_EDITOR_OSX
+			return ".sh";
+#else
+			return "";
+#endif
+		}
+
+		private static string GetButlerExtension()
+		{
+#if UNITY_EDITOR_WIN
+			return ".exe";
+#else
+			return "";
+#endif
+		}
+
+		private static string StripExecutableExtension(string path)
+		{
+			if (string.IsNullOrEmpty(path)) return path;
+			string ext = Path.GetExtension(path).ToLowerInvariant();
+			if (ext == ".exe" || ext == ".sh")
+				return path.Substring(0, path.Length - ext.Length);
+			return path;
+		}
+
+		private static void MigrateAllConfigPaths()
+		{
+			bool anyDirty = false;
+
+			foreach (string guid in AssetDatabase.FindAssets("t:SteamDeployConfig"))
+			{
+				var config = AssetDatabase.LoadAssetAtPath<SteamDeployConfig>(AssetDatabase.GUIDToAssetPath(guid));
+				if (config == null) continue;
+				string migrated = StripExecutableExtension(config.SteamCmdPath);
+				if (migrated != config.SteamCmdPath)
+				{
+					config.SteamCmdPath = migrated;
+					EditorUtility.SetDirty(config);
+					anyDirty = true;
+				}
+			}
+
+			foreach (string guid in AssetDatabase.FindAssets("t:ItchIoDeployConfig"))
+			{
+				var config = AssetDatabase.LoadAssetAtPath<ItchIoDeployConfig>(AssetDatabase.GUIDToAssetPath(guid));
+				if (config == null) continue;
+				string migrated = StripExecutableExtension(config.ButlerPath);
+				if (migrated != config.ButlerPath)
+				{
+					config.ButlerPath = migrated;
+					EditorUtility.SetDirty(config);
+					anyDirty = true;
+				}
+			}
+
+			if (anyDirty)
+				AssetDatabase.SaveAssets();
 		}
 
 		private static string ResolveConfigPath(string path)
@@ -1875,6 +2348,7 @@ namespace SteamItchIoDeployer
 		private void SetFailedState(string reason)
 		{
 			_pendingUploads.Clear();
+			_isBatchMode = false;
 			_state = DeployState.Failed;
 			_taskLabel = reason;
 		}
@@ -2137,7 +2611,7 @@ namespace SteamItchIoDeployer
 						return;
 					}
 
-					_steamConfig.SteamCmdPath = NormalizeProjectRelativePath(steamCmdExePath.Replace('\\', '/'));
+					_steamConfig.SteamCmdPath = StripExecutableExtension(NormalizeProjectRelativePath(steamCmdExePath.Replace('\\', '/')));
 					SaveConfig(_steamConfig, true);
 					AppendPlatformLog(DeployTargets.Steam, $"SteamCMD installed -> {steamCmdDir}", false);
 					System.Diagnostics.Process.Start(steamCmdExePath);
@@ -2216,7 +2690,7 @@ namespace SteamItchIoDeployer
 						return;
 					}
 
-					_itchIoConfig.ButlerPath = NormalizeProjectRelativePath(butlerExePath.Replace('\\', '/'));
+					_itchIoConfig.ButlerPath = StripExecutableExtension(NormalizeProjectRelativePath(butlerExePath.Replace('\\', '/')));
 					SaveConfig(_itchIoConfig, true);
 					AppendPlatformLog(DeployTargets.ItchIo, $"butler installed -> {butlerDir}", false);
 				};

@@ -26,7 +26,8 @@ namespace SteamItchIoDeployer
                  "or a beta branch name like 'staging' or 'beta'. Only used when Set Live is enabled.")]
         public string BuildBranch = "default";
 
-        [Tooltip("Absolute filesystem path to steamcmd.exe on this machine. " +
+        [Tooltip("Path to the steamcmd executable, WITHOUT file extension. " +
+                 "The correct extension (.exe on Windows, .sh on macOS) is appended automatically at runtime. " +
                  "WARNING: Path must contain only ASCII characters (no CJK, accents, etc.).")]
         public string SteamCmdPath = "";
 
