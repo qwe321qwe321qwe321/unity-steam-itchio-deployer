@@ -71,6 +71,7 @@ https://github.com/qwe321qwe321qwe321/unity-steam-itchio-deployer.git
 
 - `DeployTargets`
 - `BuildOutputPath`
+- `UploadCooldownSeconds`，預設為 `120`
 - Unity 6+ 的 `BuildProfile`
 
 這個 asset 會保存非機密的共用流程設定，因此 deploy target 與 build profile 不再放在 `EditorPrefs`。

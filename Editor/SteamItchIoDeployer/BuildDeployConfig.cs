@@ -24,6 +24,10 @@ namespace SteamItchIoDeployer
 		[Tooltip("Absolute or project-relative path to the directory where Unity outputs the build. This same directory is uploaded to the selected services.")]
 		public string BuildOutputPath = "";
 
+		[Min(1)]
+		[Tooltip("Minimum wait time in seconds after a successful Steam upload. Steam can temporarily reject a second depot upload submitted too soon after the previous one, so this cooldown helps avoid that rate limit. Default is 120 seconds.")]
+		public int UploadCooldownSeconds = 120;
+
 	#if UNITY_6000_0_OR_NEWER
 		[Tooltip("Optional Unity 6+ Build Profile asset to activate before building. Leave empty to use the current active build settings.")]
 		public UnityEditor.Build.Profile.BuildProfile BuildProfile;

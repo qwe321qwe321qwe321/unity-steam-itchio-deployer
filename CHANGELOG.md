@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and version numbers follow the existing `v0.x.y` tag style used in this repository.
 
+## [v0.1.9] - 2026-05-22
+
+### Changed
+
+- Replaced the fixed batch upload cooldown with a configurable `BuildDeployConfig.UploadCooldownSeconds` setting, defaulting to `120` seconds.
+- Clarified in the setting tooltip and deploy window UI that the cooldown exists because Steam may temporarily reject a second depot upload submitted too soon after a successful upload.
+
+### Fixed
+
+- Fixed consecutive batch uploads to Steam failing with a manifest timeout error when configs were uploaded back-to-back. A cooldown is now enforced between uploads in batch mode to avoid Valve-side rate limiting.
+
+### Added
+
+- The deploy window now shows a live countdown during the inter-upload cooldown so the remaining wait time is always visible.
+
+## [v0.1.8] - 2026-05-16
+
+### Added
+
+- Added batch build and deploy support: multiple `BuildDeployConfig` assets can be queued and processed sequentially with a single button press.
+- Added batch build-only and batch upload-only modes in addition to the combined batch build-and-upload flow.
+
+### Changed
+
+- SteamCMD and butler executable paths no longer require the file extension to be specified; the correct extension is appended automatically at runtime per platform.
+
+## [v0.1.7] - 2026-05-15
+
+### Fixed
+
+- Fixed macOS build output detection to recognise `.app` bundles (directories) in addition to `.app` files, so the deploy window correctly reports that a build exists after a macOS build.
+- Fixed SteamCMD auto-download on macOS: the installer now downloads the correct `.tar.gz` archive, extracts it with `tar`, and sets the executable permission via `chmod`.
+
+## [v0.1.6] - 2026-05-15
+
+### Added
+
+- Added `{GitSHA}` macro support in the Steam build description field. The SHA is resolved by running `git rev-parse HEAD`; falls back to `NO_SHA` when git is unavailable or the project is not a repository.
+
+### Changed
+
+- Updated the default `BuildDescription` value in `SteamDeployConfig` to `v{Version} - {Date} - {GitSHA}`.
+
+## [v0.1.5] - 2026-05-11
+
+### Added
+
+- Added a custom Inspector for `BuildDeployConfig` with an "Open Deploy Window" button for quick access from the Project window.
+- Added a "Show hints" toggle to hide or show all informational help boxes in the deploy window.
+- Added persistent last-used config selection: the deploy window restores the previously selected `BuildDeployConfig` on reopen.
+- Added `OpenWindowWithConfig` static entry point so the Inspector button can open the window pre-loaded with a specific config.
+
+## [v0.1.4] - 2026-05-11
+
+### Changed
+
+- Moved `SteamDeployConfig` and `ItchIoDeployConfig` references into `BuildDeployConfig` as serialized fields, consolidating all per-platform settings into a single asset.
+- The deploy window now shows platform config fields as indented sub-fields under the selected `BuildDeployConfig`, with change tracking to persist edits to the asset.
+
 ## [v0.1.3] - 2026-05-03
 
 ### Fixed

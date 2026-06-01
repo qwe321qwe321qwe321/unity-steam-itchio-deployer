@@ -71,6 +71,7 @@ All three assets are non-sensitive and safe to commit.
 
 - `DeployTargets`
 - `BuildOutputPath`
+- `UploadCooldownSeconds` defaulting to `120`
 - `BuildProfile` on Unity 6+
 
 This asset stores non-sensitive shared workflow settings, so deploy target selection and build profile no longer rely on `EditorPrefs`.

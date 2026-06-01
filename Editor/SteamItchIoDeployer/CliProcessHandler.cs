@@ -15,6 +15,8 @@ namespace SteamItchIoDeployer
 	/// <summary>
 	/// Generic async child-process wrapper for CLI-based deploy tools such as steamcmd and butler.
 	/// Output is collected on background threads and surfaced on the Unity main thread via PumpMainThread().
+	/// An idle-output timeout is enforced: if no output is received for longer than <see cref="OutputIdleTimeoutSeconds"/>,
+	/// <see cref="OnTimeoutDetected"/> is fired so the caller can kill the process and report a stall.
 	/// </summary>
 	public sealed class CliProcessHandler : IDisposable
 	{
@@ -46,6 +48,13 @@ namespace SteamItchIoDeployer
 		private int _pendingReaderCount;
 		private bool _exitNotified;
 
+		// Idle-output timeout: if no output arrives within this window the process is considered stalled.
+		// steamcmd normally produces output within a few seconds; 120 s is generous enough to survive slow
+		// login / manifest-upload phases while still catching a true hang.
+		public double OutputIdleTimeoutSeconds = 120.0;
+		private long _lastOutputReceivedTicks; // Stopwatch.GetTimestamp() at last enqueue (written from bg thread)
+		private bool _timeoutNotified;
+
 		private Process _process;
 		private Task _stdoutReaderTask;
 		private Task _stderrReaderTask;
@@ -56,6 +65,7 @@ namespace SteamItchIoDeployer
 		public event Action<string> OnSteamGuardRequired;
 		public event Action<string> OnAuthenticationFailure;
 		public event Action<int> OnProcessExited;
+		public event Action OnTimeoutDetected;
 
 		private static readonly Regex SteamGuardRequiredPattern = new Regex(
 			@"(not been authenticated for your account using Steam Guard|" +
@@ -167,7 +177,7 @@ namespace SteamItchIoDeployer
 				FileName               = executablePath,
 				Arguments              = arguments,
 				UseShellExecute        = false,
-				CreateNoWindow         = true,
+				CreateNoWindow         = false,
 				RedirectStandardOutput = true,
 				RedirectStandardError  = true,
 				StandardOutputEncoding = System.Text.Encoding.UTF8,
@@ -203,6 +213,8 @@ namespace SteamItchIoDeployer
 				_pendingReaderCount = 2;
 				_hasExited = false;
 				_exitNotified = false;
+				_timeoutNotified = false;
+				_lastOutputReceivedTicks = Stopwatch.GetTimestamp();
 				_stdoutReaderTask = Task.Run(() => PumpReader(_process.StandardOutput, fromStdErr: false));
 				_stderrReaderTask = Task.Run(() => PumpReader(_process.StandardError, fromStdErr: true));
 
@@ -243,6 +255,18 @@ namespace SteamItchIoDeployer
 				_exitNotified = true;
 				OnProcessExited?.Invoke(_exitCode);
 				return true;
+			}
+
+			if (!_hasExited && !_timeoutNotified && OutputIdleTimeoutSeconds > 0.0)
+			{
+				long idleTicks = Stopwatch.GetTimestamp() - Interlocked.Read(ref _lastOutputReceivedTicks);
+				double idleSeconds = (double)idleTicks / Stopwatch.Frequency;
+				if (idleSeconds >= OutputIdleTimeoutSeconds)
+				{
+					_timeoutNotified = true;
+					OnTimeoutDetected?.Invoke();
+					return true;
+				}
 			}
 
 			return false;
@@ -324,6 +348,7 @@ namespace SteamItchIoDeployer
 
 			string line = buffer.ToString();
 			buffer.Clear();
+			Interlocked.Exchange(ref _lastOutputReceivedTicks, Stopwatch.GetTimestamp());
 			_logQueue.Enqueue(new LogEntry(line, ClassifyLogLine(line, fromStdErr)));
 		}
 
