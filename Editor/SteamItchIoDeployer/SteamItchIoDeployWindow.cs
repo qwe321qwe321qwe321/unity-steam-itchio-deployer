@@ -430,10 +430,16 @@ namespace SteamItchIoDeployer
 				EditorGUILayout.LabelField("Deploy Targets", EditorStyles.boldLabel);
 				InfoBox("Select one or more upload targets. Build runs once, then uploads to each selected platform in sequence.");
 
+				if (_buildDeployConfig == null)
+				{
+					EditorGUILayout.HelpBox("Assign or create a Build/Deploy Config asset first — target selection has nowhere to be saved until then.", MessageType.Warning);
+				}
+
 				DeployTargets selectedTargets = GetSelectedTargets();
 				bool steam = (selectedTargets & DeployTargets.Steam) != 0;
 				bool itch = (selectedTargets & DeployTargets.ItchIo) != 0;
 
+				using (new EditorGUI.DisabledScope(_buildDeployConfig == null))
 				using (var check = new EditorGUI.ChangeCheckScope())
 				{
 					steam = EditorGUILayout.ToggleLeft("Steam", steam);
