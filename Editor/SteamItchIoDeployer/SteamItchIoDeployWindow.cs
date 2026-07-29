@@ -57,18 +57,22 @@ namespace SteamItchIoDeployer
 
 		private MainTab _mainTab = MainTab.DeployConfig;
 
-		private DeployState _state = DeployState.Setup;
-		private string _taskLabel = "";
-		private float _progressValue;
+		// Marked [SerializeField] (along with the other in-progress-operation fields below) so this
+		// survives a scripting domain reload — Unity does not persist plain private fields across one,
+		// and a reload mid-operation (e.g. during the post-build wait) would otherwise strand the UI
+		// showing a stale "Waiting..." label forever with nothing left to resume it.
+		[SerializeField] private DeployState _state = DeployState.Setup;
+		[SerializeField] private string _taskLabel = "";
+		[SerializeField] private float _progressValue;
 
 		private BuildDeployConfig _buildDeployConfig;
 
 		// Batch build state
 		private readonly List<BuildDeployConfig> _batchConfigs = new List<BuildDeployConfig>();
 		private Vector2 _batchListScroll;
-		private int _batchCurrentIndex;
-		private bool _isBatchMode;
-		private bool _isBatchUploadOnlyMode;
+		[SerializeField] private int _batchCurrentIndex;
+		[SerializeField] private bool _isBatchMode;
+		[SerializeField] private bool _isBatchUploadOnlyMode;
 
 		private SteamDeployConfig _steamConfig
 		{
@@ -118,17 +122,30 @@ namespace SteamItchIoDeployer
 		private const double PostBuildUploadBreatherSeconds = 5.0;
 
 		// Generic "wait N seconds, then continue" scheduler used for the post-build breather, the rate-limit
-		// cooldown, and the timeout-retry backoff below.
-		private double _delayedContinuationEndTime;
-		private Action _delayedContinuation;
-		private Func<int, string> _delayedContinuationLabel;
+		// cooldown, and the timeout-retry backoff below. Deliberately data-driven (enum + primitives) rather
+		// than a stored Action/Func — delegates cannot survive a scripting domain reload, and a reload firing
+		// mid-wait (e.g. from a background script recompile) would otherwise silently drop the continuation
+		// and strand the UI on a frozen "Waiting..." label forever.
+		private enum PendingUploadAction
+		{
+			None,
+			SingleDeploy,
+			BatchBuildThenUpload,
+			BatchUploadOnly,
+			RetryUpload,
+			RetryTestLogin,
+		}
+
+		[SerializeField] private PendingUploadAction _pendingAction = PendingUploadAction.None;
+		[SerializeField] private double _pendingActionReadyTime;
+		[SerializeField] private int _pendingActionBatchIndex;
 
 		// If steamcmd/butler produces no output for CliProcessHandler.OutputIdleTimeoutSeconds, kill it and
 		// retry the same upload target a limited number of times before giving up.
 		private const int MaxUploadTimeoutRetries = 3;
 		private const double UploadTimeoutRetryDelaySeconds = 5.0;
-		private DeployTargets _lastLaunchedUploadTarget = DeployTargets.None;
-		private int _uploadTimeoutRetryCount;
+		[SerializeField] private DeployTargets _lastLaunchedUploadTarget = DeployTargets.None;
+		[SerializeField] private int _uploadTimeoutRetryCount;
 
 		private string _generalLogBuffer = "";
 		private string _steamLogBuffer = "";
@@ -226,20 +243,17 @@ namespace SteamItchIoDeployer
 
 		private void OnEditorUpdate()
 		{
-			if (_delayedContinuation != null)
+			if (_pendingAction != PendingUploadAction.None)
 			{
-				double remaining = _delayedContinuationEndTime - EditorApplication.timeSinceStartup;
+				double remaining = _pendingActionReadyTime - EditorApplication.timeSinceStartup;
 				if (remaining <= 0.0)
 				{
-					Action continuation = _delayedContinuation;
-					CancelDelayedContinuation();
-					continuation();
+					RunPendingAction();
 				}
 				else
 				{
 					int remainingSeconds = Mathf.CeilToInt((float)remaining);
-					if (_delayedContinuationLabel != null)
-						_taskLabel = _delayedContinuationLabel(remainingSeconds);
+					_taskLabel = FormatPendingActionLabel(remainingSeconds);
 					Repaint();
 				}
 				return;
@@ -1329,22 +1343,12 @@ namespace SteamItchIoDeployer
 			double elapsed = EditorApplication.timeSinceStartup - _lastUploadCompletedTime;
 			double cooldownSeconds = GetBatchUploadCooldownSeconds();
 			double remaining = Math.Max(cooldownSeconds - elapsed, PostBuildUploadBreatherSeconds);
-			int batchIndexAtSchedule = _batchCurrentIndex;
 			AppendGeneralLog($"Build complete. Waiting {Mathf.CeilToInt((float)remaining)}s before upload...", false);
 			_progressValue = 0.1f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
 			_state = DeployState.Uploading;
 			Repaint();
 
-			ScheduleDelayed(remaining,
-				() =>
-				{
-					PrepareUploadSequence();
-					_taskLabel = $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Uploading {cfg.name}...";
-					_progressValue = 0.1f + 0.9f * ((float)batchIndexAtSchedule / _batchConfigs.Count);
-					_state = DeployState.Uploading;
-					LaunchNextUploadTarget();
-				},
-				remainingSeconds => $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Built. Waiting {remainingSeconds}s before upload...");
+			SchedulePendingAction(PendingUploadAction.BatchBuildThenUpload, remaining, _batchCurrentIndex);
 		}
 
 		private void LoadBatchConfigs()
@@ -1468,23 +1472,13 @@ namespace SteamItchIoDeployer
 			double remaining = cooldownSeconds - elapsed;
 			if (remaining > 0.0)
 			{
-				int batchIndexAtSchedule = _batchCurrentIndex;
 				int remainingSeconds = Mathf.CeilToInt((float)remaining);
 				AppendGeneralLog($"Waiting {remainingSeconds}s before upload to avoid Steam rate limits...", false);
 				_progressValue = 0.05f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
 				_state = DeployState.Uploading;
 				Repaint();
 
-				ScheduleDelayed(remaining,
-					() =>
-					{
-						PrepareUploadSequence();
-						_taskLabel = $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Uploading {cfg.name}...";
-						_progressValue = 0.05f + 0.9f * ((float)batchIndexAtSchedule / _batchConfigs.Count);
-						_state = DeployState.Uploading;
-						LaunchNextUploadTarget();
-					},
-					remainingSecondsTick => $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Waiting {remainingSecondsTick}s before upload...");
+				SchedulePendingAction(PendingUploadAction.BatchUploadOnly, remaining, _batchCurrentIndex);
 				return;
 			}
 
@@ -1569,16 +1563,7 @@ namespace SteamItchIoDeployer
 			_state = DeployState.Uploading;
 			Repaint();
 
-			ScheduleDelayed(remaining,
-				() =>
-				{
-					PrepareUploadSequence();
-					_taskLabel = "Preparing uploads...";
-					_progressValue = 0.6f;
-					_state = DeployState.Uploading;
-					LaunchNextUploadTarget();
-				},
-				remainingSeconds => $"Built. Waiting {remainingSeconds}s before upload...");
+			SchedulePendingAction(PendingUploadAction.SingleDeploy, remaining);
 		}
 
 		private void PrepareUploadSequence()
@@ -2017,7 +2002,7 @@ namespace SteamItchIoDeployer
 			_isProcessRunning = false;
 			_pendingUploads.Clear();
 			_isBatchMode = false;
-			CancelDelayedContinuation();
+			CancelPendingAction();
 			_state = DeployState.Setup;
 			_taskLabel = "";
 			AppendGeneralLog("Operation was manually cancelled.", true);
@@ -2040,12 +2025,7 @@ namespace SteamItchIoDeployer
 				_state = _isTestLoginContext ? DeployState.TestingLogin : DeployState.Uploading;
 				Repaint();
 
-				Action retry = _isTestLoginContext
-					? (Action)(() => LaunchSteamTestLogin(""))
-					: LaunchNextUploadTarget;
-
-				ScheduleDelayed(UploadTimeoutRetryDelaySeconds, retry,
-					remainingSeconds => $"{toolName} stalled — retrying ({_uploadTimeoutRetryCount}/{MaxUploadTimeoutRetries}) in {remainingSeconds}s...");
+				SchedulePendingAction(_isTestLoginContext ? PendingUploadAction.RetryTestLogin : PendingUploadAction.RetryUpload, UploadTimeoutRetryDelaySeconds);
 				return;
 			}
 
@@ -2054,17 +2034,91 @@ namespace SteamItchIoDeployer
 			Repaint();
 		}
 
-		private void ScheduleDelayed(double delaySeconds, Action continuation, Func<int, string> waitingLabel)
+		private void SchedulePendingAction(PendingUploadAction action, double delaySeconds, int batchIndex = 0)
 		{
-			_delayedContinuationEndTime = EditorApplication.timeSinceStartup + delaySeconds;
-			_delayedContinuation = continuation;
-			_delayedContinuationLabel = waitingLabel;
+			_pendingAction = action;
+			_pendingActionReadyTime = EditorApplication.timeSinceStartup + delaySeconds;
+			_pendingActionBatchIndex = batchIndex;
 		}
 
-		private void CancelDelayedContinuation()
+		private void CancelPendingAction()
 		{
-			_delayedContinuation = null;
-			_delayedContinuationLabel = null;
+			_pendingAction = PendingUploadAction.None;
+		}
+
+		private void RunPendingAction()
+		{
+			PendingUploadAction action = _pendingAction;
+			int batchIndex = _pendingActionBatchIndex;
+			CancelPendingAction();
+
+			switch (action)
+			{
+				case PendingUploadAction.SingleDeploy:
+					PrepareUploadSequence();
+					_taskLabel = "Preparing uploads...";
+					_progressValue = 0.6f;
+					_state = DeployState.Uploading;
+					LaunchNextUploadTarget();
+					break;
+
+				case PendingUploadAction.BatchBuildThenUpload:
+				{
+					_batchCurrentIndex = batchIndex;
+					string cfgName = (batchIndex >= 0 && batchIndex < _batchConfigs.Count && _batchConfigs[batchIndex] != null) ? _batchConfigs[batchIndex].name : "";
+					PrepareUploadSequence();
+					_taskLabel = $"[{batchIndex + 1}/{_batchConfigs.Count}] Uploading {cfgName}...";
+					_progressValue = 0.1f + 0.9f * ((float)batchIndex / _batchConfigs.Count);
+					_state = DeployState.Uploading;
+					LaunchNextUploadTarget();
+					break;
+				}
+
+				case PendingUploadAction.BatchUploadOnly:
+				{
+					_batchCurrentIndex = batchIndex;
+					string cfgName = (batchIndex >= 0 && batchIndex < _batchConfigs.Count && _batchConfigs[batchIndex] != null) ? _batchConfigs[batchIndex].name : "";
+					PrepareUploadSequence();
+					_taskLabel = $"[{batchIndex + 1}/{_batchConfigs.Count}] Uploading {cfgName}...";
+					_progressValue = 0.05f + 0.9f * ((float)batchIndex / _batchConfigs.Count);
+					_state = DeployState.Uploading;
+					LaunchNextUploadTarget();
+					break;
+				}
+
+				case PendingUploadAction.RetryUpload:
+					LaunchNextUploadTarget();
+					break;
+
+				case PendingUploadAction.RetryTestLogin:
+					LaunchSteamTestLogin("");
+					break;
+			}
+		}
+
+		private string FormatPendingActionLabel(int remainingSeconds)
+		{
+			switch (_pendingAction)
+			{
+				case PendingUploadAction.SingleDeploy:
+					return $"Built. Waiting {remainingSeconds}s before upload...";
+
+				case PendingUploadAction.BatchBuildThenUpload:
+					return $"[{_pendingActionBatchIndex + 1}/{_batchConfigs.Count}] Built. Waiting {remainingSeconds}s before upload...";
+
+				case PendingUploadAction.BatchUploadOnly:
+					return $"[{_pendingActionBatchIndex + 1}/{_batchConfigs.Count}] Waiting {remainingSeconds}s before upload...";
+
+				case PendingUploadAction.RetryUpload:
+				case PendingUploadAction.RetryTestLogin:
+				{
+					string toolName = _activeToolKind == CliProcessHandler.CliToolKind.Butler ? "butler" : "steamcmd";
+					return $"{toolName} stalled — retrying ({_uploadTimeoutRetryCount}/{MaxUploadTimeoutRetries}) in {remainingSeconds}s...";
+				}
+
+				default:
+					return _taskLabel;
+			}
 		}
 
 		private CliProcessHandler CreateAndWireProcessHandler(CliProcessHandler.CliToolKind toolKind)
@@ -2633,7 +2687,7 @@ namespace SteamItchIoDeployer
 		{
 			_pendingUploads.Clear();
 			_isBatchMode = false;
-			CancelDelayedContinuation();
+			CancelPendingAction();
 			_state = DeployState.Failed;
 			_taskLabel = reason;
 		}
