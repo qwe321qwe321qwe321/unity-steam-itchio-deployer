@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and version numbers follow the existing `v0.x.y` tag style used in this repository.
 
+## [v0.1.12] - 2026-07-29
+
+### Fixed
+
+- Unity 6 Build Profile builds now switch `EditorUserBuildSettings.activeBuildTarget` before running the player build, then resume only after platform reimport and script compilation finish. This prevents Addressables from generating a Windows player with a macOS catalog (or vice versa).
+- Successful builds are now checked for mismatched Addressables `settings.json` and `catalog.bin` platform data before replacing the previous build or starting either a Steam or itch.io upload. The SteamCMD and itch.io butler launch paths repeat the check, so upload-only, batch upload-only, and retry flows cannot bypass it. Rejected output is retained in the `_steamdeployer_tmp` directory for diagnosis.
+
 ## [v0.1.9] - 2026-05-22
 
 ### Changed

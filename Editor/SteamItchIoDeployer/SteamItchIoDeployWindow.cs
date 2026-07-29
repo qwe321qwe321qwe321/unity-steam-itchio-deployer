@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace SteamItchIoDeployer
@@ -140,6 +141,24 @@ namespace SteamItchIoDeployer
 		[SerializeField] private double _pendingActionReadyTime;
 		[SerializeField] private int _pendingActionBatchIndex;
 
+		// Unity 6 Build Profiles do not automatically update EditorUserBuildSettings.activeBuildTarget
+		// before build preprocessors run. Addressables resolves its [BuildTarget] profile variable from
+		// that active target, so building a Windows profile while macOS is active can produce a Windows
+		// player whose catalog still points at StandaloneOSX bundles (and vice versa). Switching targets
+		// can trigger a domain reload, therefore the continuation must be serialized and resumed later.
+		private enum PendingBuildAction
+		{
+			None,
+			SingleBuildOnly,
+			SingleDeploy,
+			BatchBuildOnlyItem,
+			BatchDeployItem,
+		}
+
+		[SerializeField] private PendingBuildAction _pendingBuildAction = PendingBuildAction.None;
+		[SerializeField] private BuildTarget _pendingBuildTarget = BuildTarget.NoTarget;
+		[SerializeField] private double _pendingBuildResumeNotBeforeTime;
+
 		// If steamcmd/butler produces no output for CliProcessHandler.OutputIdleTimeoutSeconds, kill it and
 		// retry the same upload target a limited number of times before giving up.
 		private const int MaxUploadTimeoutRetries = 3;
@@ -243,6 +262,12 @@ namespace SteamItchIoDeployer
 
 		private void OnEditorUpdate()
 		{
+			if (_pendingBuildAction != PendingBuildAction.None)
+			{
+				ResumeBuildAfterTargetSwitchWhenReady();
+				return;
+			}
+
 			if (_pendingAction != PendingUploadAction.None)
 			{
 				double remaining = _pendingActionReadyTime - EditorApplication.timeSinceStartup;
@@ -1249,6 +1274,9 @@ namespace SteamItchIoDeployer
 			_buildDeployConfig = cfg;
 			RefreshExecutableExists();
 
+			if (!EnsureActiveBuildTarget(PendingBuildAction.BatchBuildOnlyItem))
+				return;
+
 			AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} ---", false);
 
 			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath()))
@@ -1317,6 +1345,9 @@ namespace SteamItchIoDeployer
 				SetFailedState($"Validation failed for config [{_batchCurrentIndex + 1}]: {cfg.name}");
 				return;
 			}
+
+			if (!EnsureActiveBuildTarget(PendingBuildAction.BatchDeployItem))
+				return;
 
 			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath()))
 			{
@@ -1492,6 +1523,7 @@ namespace SteamItchIoDeployer
 		private void StartBuildOnly()
 		{
 			if (!EnsureBuildOutputPathForBuild()) return;
+			if (!EnsureActiveBuildTarget(PendingBuildAction.SingleBuildOnly)) return;
 			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath())) return;
 
 			ClearAllLogBuffers();
@@ -1535,6 +1567,7 @@ namespace SteamItchIoDeployer
 		private void StartDeployment()
 		{
 			if (!ValidateSelectedTargetsForUpload(showDialogs: true, requireCredentials: true, requireBuildOutput: true)) return;
+			if (!EnsureActiveBuildTarget(PendingBuildAction.SingleDeploy)) return;
 			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath())) return;
 
 			ClearAllLogBuffers();
@@ -1628,6 +1661,9 @@ namespace SteamItchIoDeployer
 		private void LaunchSteamUpload(string steamGuardCode)
 		{
 			string buildOutputPath = ResolveSelectedBuildOutputPath();
+			if (!ValidateBuildBeforeUpload(buildOutputPath, DeployTargets.Steam))
+				return;
+
 			string appVdfPath;
 
 			try
@@ -1663,6 +1699,9 @@ namespace SteamItchIoDeployer
 		private void LaunchItchIoUpload()
 		{
 			string buildOutputPath = ResolveSelectedBuildOutputPath();
+			if (!ValidateBuildBeforeUpload(buildOutputPath, DeployTargets.ItchIo))
+				return;
+
 			string[] ignorePatterns = SplitIgnorePatterns(_itchIoConfig.IgnoreFiles);
 			string args = CliProcessHandler.BuildButlerPushArguments(
 				buildOutputPath,
@@ -1694,6 +1733,34 @@ namespace SteamItchIoDeployer
 			}
 		}
 
+		private bool ValidateBuildBeforeUpload(string buildOutputPath, DeployTargets uploadTarget)
+		{
+			try
+			{
+				BuildTarget target = ResolveSelectedBuildTargetForBuild();
+				if (ValidateAddressablesBuildTarget(buildOutputPath, target, out string failureReason))
+					return true;
+
+				string platformName = uploadTarget == DeployTargets.ItchIo ? "itch.io" : "Steam";
+				string message = $"{platformName} upload blocked: {failureReason}";
+				AppendGeneralLog(message, true);
+				AppendPlatformLog(uploadTarget, message, true);
+				Debug.LogError($"[SteamItchIoDeployer] {message}");
+				SetFailedState($"{platformName} upload blocked because the Addressables catalog targets the wrong platform.");
+				return false;
+			}
+			catch (Exception ex)
+			{
+				string platformName = uploadTarget == DeployTargets.ItchIo ? "itch.io" : "Steam";
+				string message = $"{platformName} upload blocked because the selected build target could not be resolved: {ex.Message}";
+				AppendGeneralLog(message, true);
+				AppendPlatformLog(uploadTarget, message, true);
+				Debug.LogError($"[SteamItchIoDeployer] {message}");
+				SetFailedState(message);
+				return false;
+			}
+		}
+
 		private bool RunBuildIntoResolvedPath(string buildOutputPath, out string failureReason)
 		{
 			failureReason = null;
@@ -1714,6 +1781,15 @@ namespace SteamItchIoDeployer
 				AppendGeneralLog($"BUILD FAILED: {detail}", true);
 				Debug.LogError($"[SteamItchIoDeployer] Unity build FAILED — {detail}.");
 				failureReason = "Build failed.";
+				return false;
+			}
+
+			if (!ValidateAddressablesBuildTarget(tempOutputPath, resolvedTarget, out string addressablesFailure))
+			{
+				AppendGeneralLog($"BUILD REJECTED: {addressablesFailure}", true);
+				AppendGeneralLog($"The rejected build was kept for inspection at: {tempOutputPath}", true);
+				Debug.LogError($"[SteamItchIoDeployer] {addressablesFailure} Rejected output: {tempOutputPath}");
+				failureReason = "Build rejected because its Addressables catalog targets the wrong platform.";
 				return false;
 			}
 
@@ -1808,6 +1884,9 @@ namespace SteamItchIoDeployer
 				{
 					BuildTarget profileTarget = GetBuildTargetFromProfile(_buildDeployConfig.BuildProfile);
 					resolvedTarget = profileTarget;
+					if (!GuardActiveBuildTarget(profileTarget))
+						return null;
+
 					var profileOptions = new BuildPlayerWithProfileOptions
 					{
 						buildProfile = _buildDeployConfig.BuildProfile,
@@ -1821,6 +1900,9 @@ namespace SteamItchIoDeployer
 
 				BuildPlayerOptions opts = GetBuildPlayerOptionsWithoutDialog();
 				resolvedTarget = opts.target;
+				if (!GuardActiveBuildTarget(opts.target))
+					return null;
+
 				opts.locationPathName = GetBuildLocationPath(outputPath, opts.target);
 				return BuildPipeline.BuildPlayer(opts);
 			}
@@ -1885,6 +1967,214 @@ namespace SteamItchIoDeployer
 				return outputPath;
 
 			return Path.Combine(outputPath, Application.productName + GetExeExtension(target));
+		}
+
+		private BuildTarget ResolveSelectedBuildTargetForBuild()
+		{
+#if UNITY_6000_0_OR_NEWER
+			if (_buildDeployConfig != null && _buildDeployConfig.BuildProfile != null)
+				return GetBuildTargetFromProfile(_buildDeployConfig.BuildProfile);
+#endif
+			return EditorUserBuildSettings.activeBuildTarget;
+		}
+
+		private bool EnsureActiveBuildTarget(PendingBuildAction resumeAction)
+		{
+			BuildTarget selectedTarget;
+			try
+			{
+				selectedTarget = ResolveSelectedBuildTargetForBuild();
+			}
+			catch (Exception ex)
+			{
+				SetFailedState($"Unable to resolve the selected build target: {ex.Message}");
+				return false;
+			}
+
+			if (selectedTarget == EditorUserBuildSettings.activeBuildTarget)
+				return true;
+
+			if (Application.isBatchMode)
+			{
+				SetFailedState(
+					$"The selected profile targets {selectedTarget}, but Unity is running with " +
+					$"{EditorUserBuildSettings.activeBuildTarget} active. Start batch mode with the matching -buildTarget.");
+				return false;
+			}
+
+			_pendingBuildAction = resumeAction;
+			_pendingBuildTarget = selectedTarget;
+			_pendingBuildResumeNotBeforeTime = EditorApplication.timeSinceStartup + 0.5;
+			_state = DeployState.Building;
+			_progressValue = 0.02f;
+			_taskLabel = $"Switching active build target to {selectedTarget}...";
+			AppendGeneralLog(
+				$"Switching active build target from {EditorUserBuildSettings.activeBuildTarget} to {selectedTarget} " +
+				"before running build preprocessors (including Addressables).", false);
+			Repaint();
+
+			BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(selectedTarget);
+			if (!EditorUserBuildSettings.SwitchActiveBuildTarget(targetGroup, selectedTarget))
+			{
+				CancelPendingBuildAction();
+				SetFailedState($"Unity could not switch the active build target to {selectedTarget}.");
+				return false;
+			}
+
+			// Ensure platform-dependent scripts and build preprocessors are reloaded before the continuation.
+			// PendingBuildAction is serialized, so the operation resumes safely after the domain reload.
+			CompilationPipeline.RequestScriptCompilation();
+			return false;
+		}
+
+		private void ResumeBuildAfterTargetSwitchWhenReady()
+		{
+			if (EditorUserBuildSettings.activeBuildTarget != _pendingBuildTarget)
+			{
+				_taskLabel = $"Waiting for active build target {_pendingBuildTarget}...";
+				Repaint();
+				return;
+			}
+
+			if (EditorApplication.isCompiling || EditorApplication.isUpdating
+				|| EditorApplication.timeSinceStartup < _pendingBuildResumeNotBeforeTime)
+			{
+				_taskLabel = $"Preparing {_pendingBuildTarget} build...";
+				Repaint();
+				return;
+			}
+
+			PendingBuildAction action = _pendingBuildAction;
+			BuildTarget target = _pendingBuildTarget;
+			CancelPendingBuildAction();
+			AppendGeneralLog($"Active build target is ready: {target}. Resuming build.", false);
+
+			switch (action)
+			{
+				case PendingBuildAction.SingleBuildOnly:
+					StartBuildOnly();
+					break;
+				case PendingBuildAction.SingleDeploy:
+					StartDeployment();
+					break;
+				case PendingBuildAction.BatchBuildOnlyItem:
+					RunNextBatchBuildItem();
+					break;
+				case PendingBuildAction.BatchDeployItem:
+					RunNextBatchItem();
+					break;
+			}
+		}
+
+		private static bool GuardActiveBuildTarget(BuildTarget target)
+		{
+			if (EditorUserBuildSettings.activeBuildTarget == target)
+				return true;
+
+			Debug.LogError(
+				$"[SteamItchIoDeployer] Refusing to build {target} while the active build target is " +
+				$"{EditorUserBuildSettings.activeBuildTarget}. This would let platform-dependent preprocessors " +
+				"(notably Addressables) generate content for the wrong platform.");
+			return false;
+		}
+
+		private bool ValidateAddressablesBuildTarget(string buildRoot, BuildTarget target, out string failureReason)
+		{
+			failureReason = null;
+			string expectedPlatform = GetAddressablesPlatformName(target);
+			if (string.IsNullOrEmpty(expectedPlatform))
+			{
+				AppendGeneralLog($"Addressables platform validation skipped for unsupported target {target}.", false);
+				return true;
+			}
+
+			try
+			{
+				string[] catalogs = Directory.GetFiles(buildRoot, "catalog.bin", SearchOption.AllDirectories);
+				if (catalogs.Length == 0)
+				{
+					AppendGeneralLog("No Addressables catalog.bin was found; platform validation is not applicable.", false);
+					return true;
+				}
+
+				string[] knownPlatforms =
+				{
+					"StandaloneWindows64",
+					"StandaloneWindows",
+					"StandaloneOSX",
+					"WebGL",
+					"Android",
+					"iOS",
+				};
+
+				foreach (string catalogPath in catalogs)
+				{
+					string catalogText = Encoding.UTF8.GetString(File.ReadAllBytes(catalogPath));
+					if (!catalogText.Contains(expectedPlatform, StringComparison.Ordinal))
+					{
+						failureReason =
+							$"Addressables catalog '{catalogPath}' does not reference the expected platform " +
+							$"'{expectedPlatform}' for build target {target}.";
+						return false;
+					}
+
+					string catalogWithoutExpected = catalogText.Replace(expectedPlatform, "", StringComparison.Ordinal);
+					foreach (string platform in knownPlatforms)
+					{
+						if (platform != expectedPlatform
+							&& catalogWithoutExpected.Contains(platform, StringComparison.Ordinal))
+						{
+							failureReason =
+								$"Addressables catalog '{catalogPath}' contains '{platform}' while building " +
+								$"{target} (expected '{expectedPlatform}').";
+							return false;
+						}
+					}
+
+					string settingsPath = Path.Combine(Path.GetDirectoryName(catalogPath) ?? "", "settings.json");
+					if (File.Exists(settingsPath))
+					{
+						string settingsText = File.ReadAllText(settingsPath);
+						if (!settingsText.Contains(expectedPlatform, StringComparison.Ordinal))
+						{
+							failureReason =
+								$"Addressables settings '{settingsPath}' does not target '{expectedPlatform}' " +
+								$"for build target {target}.";
+							return false;
+						}
+					}
+				}
+
+				AppendGeneralLog(
+					$"Addressables platform validation passed: {expectedPlatform} ({catalogs.Length} catalog(s)).", false);
+				return true;
+			}
+			catch (Exception ex)
+			{
+				failureReason = $"Could not validate Addressables output for {target}: {ex.Message}";
+				return false;
+			}
+		}
+
+		private static string GetAddressablesPlatformName(BuildTarget target)
+		{
+			switch (target)
+			{
+				case BuildTarget.StandaloneWindows64:
+					return "StandaloneWindows64";
+				case BuildTarget.StandaloneWindows:
+					return "StandaloneWindows";
+				case BuildTarget.StandaloneOSX:
+					return "StandaloneOSX";
+				case BuildTarget.WebGL:
+					return "WebGL";
+				case BuildTarget.Android:
+					return "Android";
+				case BuildTarget.iOS:
+					return "iOS";
+				default:
+					return null;
+			}
 		}
 
 	#if UNITY_6000_0_OR_NEWER
@@ -2002,6 +2292,7 @@ namespace SteamItchIoDeployer
 			_isProcessRunning = false;
 			_pendingUploads.Clear();
 			_isBatchMode = false;
+			CancelPendingBuildAction();
 			CancelPendingAction();
 			_state = DeployState.Setup;
 			_taskLabel = "";
@@ -2044,6 +2335,13 @@ namespace SteamItchIoDeployer
 		private void CancelPendingAction()
 		{
 			_pendingAction = PendingUploadAction.None;
+		}
+
+		private void CancelPendingBuildAction()
+		{
+			_pendingBuildAction = PendingBuildAction.None;
+			_pendingBuildTarget = BuildTarget.NoTarget;
+			_pendingBuildResumeNotBeforeTime = 0.0;
 		}
 
 		private void RunPendingAction()
@@ -2687,6 +2985,7 @@ namespace SteamItchIoDeployer
 		{
 			_pendingUploads.Clear();
 			_isBatchMode = false;
+			CancelPendingBuildAction();
 			CancelPendingAction();
 			_state = DeployState.Failed;
 			_taskLabel = reason;
