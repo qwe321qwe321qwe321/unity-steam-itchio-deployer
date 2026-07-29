@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and version numbers follow the existing `v0.x.y` tag style used in this repository.
 
+## [v0.1.13] - 2026-07-29
+
+### Fixed
+
+- Unity 6 now activates the selected `BuildProfile` itself instead of relying only on the legacy `SwitchActiveBuildTarget` API, which can leave the previous profile's platform active. Target switching has a one-time recovery attempt and a 120-second timeout instead of waiting forever.
+- The non-empty build output confirmation now appears before any platform/profile switch. Its accepted state survives the switch's domain reload, so the resumed build does not prompt twice.
+
 ## [v0.1.12] - 2026-07-29
 
 ### Fixed

@@ -10,7 +10,6 @@ using System.Text;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
-using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace SteamItchIoDeployer
@@ -158,6 +157,10 @@ namespace SteamItchIoDeployer
 		[SerializeField] private PendingBuildAction _pendingBuildAction = PendingBuildAction.None;
 		[SerializeField] private BuildTarget _pendingBuildTarget = BuildTarget.NoTarget;
 		[SerializeField] private double _pendingBuildResumeNotBeforeTime;
+		[SerializeField] private double _pendingBuildSwitchDeadlineTime;
+		[SerializeField] private bool _pendingBuildProfileActivationAttempted;
+		[SerializeField] private bool _buildOutputOverwriteConfirmed;
+		private const double BuildTargetSwitchTimeoutSeconds = 120.0;
 
 		// If steamcmd/butler produces no output for CliProcessHandler.OutputIdleTimeoutSeconds, kill it and
 		// retry the same upload target a limited number of times before giving up.
@@ -1245,6 +1248,7 @@ namespace SteamItchIoDeployer
 		{
 			if (_batchConfigs.Count == 0 || !_batchConfigs.TrueForAll(c => c != null)) return;
 
+			_buildOutputOverwriteConfirmed = false;
 			_isBatchMode = true;
 			_isBatchUploadOnlyMode = false;
 			_batchCurrentIndex = 0;
@@ -1274,18 +1278,19 @@ namespace SteamItchIoDeployer
 			_buildDeployConfig = cfg;
 			RefreshExecutableExists();
 
-			if (!EnsureActiveBuildTarget(PendingBuildAction.BatchBuildOnlyItem))
-				return;
-
 			AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} ---", false);
 
-			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath()))
+			if (!ConfirmBuildOutputPathOverwriteOnce(ResolveSelectedBuildOutputPath()))
 			{
 				_isBatchMode = false;
 				SetFailedState($"Batch build cancelled at config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name}");
 				return;
 			}
 
+			if (!EnsureActiveBuildTarget(PendingBuildAction.BatchBuildOnlyItem))
+				return;
+
+			ConsumeBuildOutputOverwriteConfirmation();
 			_state = DeployState.Building;
 			_progressValue = (float)_batchCurrentIndex / _batchConfigs.Count;
 			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Building {cfg.name}...";
@@ -1308,6 +1313,7 @@ namespace SteamItchIoDeployer
 		{
 			if (_batchConfigs.Count == 0 || !_batchConfigs.TrueForAll(c => c != null)) return;
 
+			_buildOutputOverwriteConfirmed = false;
 			_isBatchMode = true;
 			_isBatchUploadOnlyMode = false;
 			_batchCurrentIndex = 0;
@@ -1346,16 +1352,17 @@ namespace SteamItchIoDeployer
 				return;
 			}
 
-			if (!EnsureActiveBuildTarget(PendingBuildAction.BatchDeployItem))
-				return;
-
-			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath()))
+			if (!ConfirmBuildOutputPathOverwriteOnce(ResolveSelectedBuildOutputPath()))
 			{
 				_isBatchMode = false;
 				SetFailedState($"Batch cancelled at config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name}");
 				return;
 			}
 
+			if (!EnsureActiveBuildTarget(PendingBuildAction.BatchDeployItem))
+				return;
+
+			ConsumeBuildOutputOverwriteConfirmation();
 			_state = DeployState.Building;
 			_progressValue = 0.05f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
 			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Building {cfg.name}...";
@@ -1523,8 +1530,9 @@ namespace SteamItchIoDeployer
 		private void StartBuildOnly()
 		{
 			if (!EnsureBuildOutputPathForBuild()) return;
+			if (!ConfirmBuildOutputPathOverwriteOnce(ResolveSelectedBuildOutputPath())) return;
 			if (!EnsureActiveBuildTarget(PendingBuildAction.SingleBuildOnly)) return;
-			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath())) return;
+			ConsumeBuildOutputOverwriteConfirmation();
 
 			ClearAllLogBuffers();
 			_selectedLogTab = LogTab.General;
@@ -1567,8 +1575,9 @@ namespace SteamItchIoDeployer
 		private void StartDeployment()
 		{
 			if (!ValidateSelectedTargetsForUpload(showDialogs: true, requireCredentials: true, requireBuildOutput: true)) return;
+			if (!ConfirmBuildOutputPathOverwriteOnce(ResolveSelectedBuildOutputPath())) return;
 			if (!EnsureActiveBuildTarget(PendingBuildAction.SingleDeploy)) return;
-			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath())) return;
+			ConsumeBuildOutputOverwriteConfirmation();
 
 			ClearAllLogBuffers();
 			_selectedLogTab = LogTab.General;
@@ -2005,6 +2014,8 @@ namespace SteamItchIoDeployer
 			_pendingBuildAction = resumeAction;
 			_pendingBuildTarget = selectedTarget;
 			_pendingBuildResumeNotBeforeTime = EditorApplication.timeSinceStartup + 0.5;
+			_pendingBuildSwitchDeadlineTime = EditorApplication.timeSinceStartup + BuildTargetSwitchTimeoutSeconds;
+			_pendingBuildProfileActivationAttempted = false;
 			_state = DeployState.Building;
 			_progressValue = 0.02f;
 			_taskLabel = $"Switching active build target to {selectedTarget}...";
@@ -2013,17 +2024,33 @@ namespace SteamItchIoDeployer
 				"before running build preprocessors (including Addressables).", false);
 			Repaint();
 
-			BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(selectedTarget);
-			if (!EditorUserBuildSettings.SwitchActiveBuildTarget(targetGroup, selectedTarget))
+			bool switchRequested = false;
+#if UNITY_6000_0_OR_NEWER
+			if (_buildDeployConfig != null && _buildDeployConfig.BuildProfile != null
+				&& UnityEditor.Build.Profile.BuildProfile.GetActiveBuildProfile() != _buildDeployConfig.BuildProfile)
 			{
-				CancelPendingBuildAction();
-				SetFailedState($"Unity could not switch the active build target to {selectedTarget}.");
-				return false;
+				// On Unity 6, the active Build Profile owns the active platform. Calling only the legacy
+				// SwitchActiveBuildTarget API while a different profile is active can return true but leave
+				// activeBuildTarget unchanged. Activating the selected profile performs the real switch.
+				_pendingBuildProfileActivationAttempted = true;
+				UnityEditor.Build.Profile.BuildProfile.SetActiveBuildProfile(_buildDeployConfig.BuildProfile);
+				switchRequested = true;
+			}
+#endif
+
+			if (!switchRequested)
+			{
+				BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(selectedTarget);
+				if (!EditorUserBuildSettings.SwitchActiveBuildTarget(targetGroup, selectedTarget))
+				{
+					CancelPendingBuildAction();
+					SetFailedState($"Unity could not switch the active build target to {selectedTarget}.");
+					return false;
+				}
 			}
 
-			// Ensure platform-dependent scripts and build preprocessors are reloaded before the continuation.
-			// PendingBuildAction is serialized, so the operation resumes safely after the domain reload.
-			CompilationPipeline.RequestScriptCompilation();
+			// PendingBuildAction is serialized, so the operation resumes safely after any domain reload
+			// triggered by activating the profile or switching the legacy active target.
 			return false;
 		}
 
@@ -2031,6 +2058,39 @@ namespace SteamItchIoDeployer
 		{
 			if (EditorUserBuildSettings.activeBuildTarget != _pendingBuildTarget)
 			{
+				if (_pendingBuildSwitchDeadlineTime <= 0.0)
+					_pendingBuildSwitchDeadlineTime = EditorApplication.timeSinceStartup + BuildTargetSwitchTimeoutSeconds;
+
+				if (EditorApplication.timeSinceStartup >= _pendingBuildSwitchDeadlineTime)
+				{
+					BuildTarget expected = _pendingBuildTarget;
+					BuildTarget actual = EditorUserBuildSettings.activeBuildTarget;
+					CancelPendingBuildAction();
+					SetFailedState(
+						$"Timed out switching the active build target to {expected}. Unity is still using {actual}. " +
+						"Verify that the selected Build Profile and platform module are installed.");
+					return;
+				}
+
+#if UNITY_6000_0_OR_NEWER
+				// Migration/self-recovery for operations that were already waiting when this fix was loaded:
+				// activate the selected Unity 6 profile once, then let its reload resume this continuation.
+				if (!_pendingBuildProfileActivationAttempted
+					&& _buildDeployConfig != null
+					&& _buildDeployConfig.BuildProfile != null
+					&& GetBuildTargetFromProfile(_buildDeployConfig.BuildProfile) == _pendingBuildTarget)
+				{
+					_pendingBuildProfileActivationAttempted = true;
+					_taskLabel = $"Activating {_pendingBuildTarget} Build Profile...";
+					AppendGeneralLog(
+						$"Activating Build Profile '{_buildDeployConfig.BuildProfile.name}' to complete the " +
+						$"{_pendingBuildTarget} platform switch.", false);
+					Repaint();
+					UnityEditor.Build.Profile.BuildProfile.SetActiveBuildProfile(_buildDeployConfig.BuildProfile);
+					return;
+				}
+#endif
+
 				_taskLabel = $"Waiting for active build target {_pendingBuildTarget}...";
 				Repaint();
 				return;
@@ -2292,6 +2352,7 @@ namespace SteamItchIoDeployer
 			_isProcessRunning = false;
 			_pendingUploads.Clear();
 			_isBatchMode = false;
+			_buildOutputOverwriteConfirmed = false;
 			CancelPendingBuildAction();
 			CancelPendingAction();
 			_state = DeployState.Setup;
@@ -2342,6 +2403,8 @@ namespace SteamItchIoDeployer
 			_pendingBuildAction = PendingBuildAction.None;
 			_pendingBuildTarget = BuildTarget.NoTarget;
 			_pendingBuildResumeNotBeforeTime = 0.0;
+			_pendingBuildSwitchDeadlineTime = 0.0;
+			_pendingBuildProfileActivationAttempted = false;
 		}
 
 		private void RunPendingAction()
@@ -2578,6 +2641,25 @@ namespace SteamItchIoDeployer
 				$"The selected build output folder already contains files:\n\n{buildOutputPath}\n\nBuilding into this folder may overwrite or leave behind stale files. Continue?",
 				"Continue",
 				"Cancel");
+		}
+
+		private bool ConfirmBuildOutputPathOverwriteOnce(string buildOutputPath)
+		{
+			if (_buildOutputOverwriteConfirmed)
+				return true;
+
+			if (!ConfirmBuildOutputPathOverwrite(buildOutputPath))
+				return false;
+
+			// The platform switch below can reload the scripting domain. Persist this approval so the
+			// resumed build does not show the same dialog a second time after the switch completes.
+			_buildOutputOverwriteConfirmed = true;
+			return true;
+		}
+
+		private void ConsumeBuildOutputOverwriteConfirmation()
+		{
+			_buildOutputOverwriteConfirmed = false;
 		}
 
 		private bool CheckAnyBuildOutputExists()
@@ -2985,6 +3067,7 @@ namespace SteamItchIoDeployer
 		{
 			_pendingUploads.Clear();
 			_isBatchMode = false;
+			_buildOutputOverwriteConfirmed = false;
 			CancelPendingBuildAction();
 			CancelPendingAction();
 			_state = DeployState.Failed;
