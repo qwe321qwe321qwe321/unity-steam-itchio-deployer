@@ -111,8 +111,24 @@ namespace SteamItchIoDeployer
 		// Batch upload cooldown — prevents consecutive uploads to the same Steam AppID too quickly.
 		// Records when the last upload finished so the next upload can wait out any remaining gap.
 		private double _lastUploadCompletedTime = double.MinValue; // EditorApplication.timeSinceStartup value
-		private bool _isBatchUploadCooldownActive;
 		private const int DefaultBatchUploadCooldownSeconds = 120;
+
+		// Small settle time enforced after every build, before the uploader is launched — steamcmd/butler
+		// seem to stall more often when started the instant a build finishes.
+		private const double PostBuildUploadBreatherSeconds = 5.0;
+
+		// Generic "wait N seconds, then continue" scheduler used for the post-build breather, the rate-limit
+		// cooldown, and the timeout-retry backoff below.
+		private double _delayedContinuationEndTime;
+		private Action _delayedContinuation;
+		private Func<int, string> _delayedContinuationLabel;
+
+		// If steamcmd/butler produces no output for CliProcessHandler.OutputIdleTimeoutSeconds, kill it and
+		// retry the same upload target a limited number of times before giving up.
+		private const int MaxUploadTimeoutRetries = 3;
+		private const double UploadTimeoutRetryDelaySeconds = 5.0;
+		private DeployTargets _lastLaunchedUploadTarget = DeployTargets.None;
+		private int _uploadTimeoutRetryCount;
 
 		private string _generalLogBuffer = "";
 		private string _steamLogBuffer = "";
@@ -210,24 +226,20 @@ namespace SteamItchIoDeployer
 
 		private void OnEditorUpdate()
 		{
-			if (_isBatchUploadCooldownActive)
+			if (_delayedContinuation != null)
 			{
-				double cooldownEndTime = _lastUploadCompletedTime + GetBatchUploadCooldownSeconds();
-				double remaining = cooldownEndTime - EditorApplication.timeSinceStartup;
+				double remaining = _delayedContinuationEndTime - EditorApplication.timeSinceStartup;
 				if (remaining <= 0.0)
 				{
-					_isBatchUploadCooldownActive = false;
-					AppendGeneralLog("Cooldown complete. Proceeding to upload...", false);
-					PrepareUploadSequence();
-					_state = DeployState.Uploading;
-					_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Uploading {_batchConfigs[_batchCurrentIndex].name}...";
-					_progressValue = 0.1f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
-					LaunchNextUploadTarget();
+					Action continuation = _delayedContinuation;
+					CancelDelayedContinuation();
+					continuation();
 				}
 				else
 				{
 					int remainingSeconds = Mathf.CeilToInt((float)remaining);
-					_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Built. Waiting {remainingSeconds}s before upload...";
+					if (_delayedContinuationLabel != null)
+						_taskLabel = _delayedContinuationLabel(remainingSeconds);
 					Repaint();
 				}
 				return;
@@ -724,6 +736,16 @@ namespace SteamItchIoDeployer
 				InfoBox("Description supports {Version}, {Date}, {DateTime}, {GitSHA} macros.");
 				_steamConfig.IgnoreFiles = EditorGUILayout.TextField("Ignore Files", _steamConfig.IgnoreFiles);
 
+				_steamConfig.ExecutableAltName = EditorGUILayout.TextField(new GUIContent("Executable Alt Name", "Optional. Set this if the Steamworks launch executable name doesn't match the actual build output (Windows/macOS Standalone only)."), _steamConfig.ExecutableAltName);
+				InfoBox("Windows/macOS Standalone only. If the launch executable configured on the Steamworks partner site (e.g. App) doesn't match the actual build output name (e.g. MyApp), set it here (extension optional). A forwarder — App.exe on Windows, App.app on macOS — is generated after each build that launches the real executable and exits. Leave blank if not needed.");
+
+				using (new EditorGUI.DisabledScope(string.IsNullOrWhiteSpace(_steamConfig.ExecutableAltName)))
+				{
+					if (GUILayout.Button("Test Generate Alias Executable", GUILayout.Width(220)))
+						TestGenerateExecutableAlias();
+				}
+				InfoBox("Generates the forwarder into the current build output folder without running a full build, so you can quickly verify it launches correctly once a real build exists there. Uses the active Editor build target (Windows or macOS).");
+
 				EditorGUILayout.Space(6);
 				EditorGUILayout.LabelField("SteamCMD Executable", EditorStyles.boldLabel);
 
@@ -1153,6 +1175,7 @@ namespace SteamItchIoDeployer
 			_isTestLoginContext = true;
 			_steamGuardCodeInput = "";
 			_pendingUploads.Clear();
+			_uploadTimeoutRetryCount = 0;
 
 			if (_saveSteamCredentials && !string.IsNullOrEmpty(_steamPassword))
 				CryptographyHelper.SaveEncryptedValue(GetProjectScopedPrefsKey(SteamPasswordCipherPrefsKey), _steamPassword);
@@ -1305,24 +1328,23 @@ namespace SteamItchIoDeployer
 
 			double elapsed = EditorApplication.timeSinceStartup - _lastUploadCompletedTime;
 			double cooldownSeconds = GetBatchUploadCooldownSeconds();
-			double remaining = cooldownSeconds - elapsed;
-			if (remaining > 0.0)
-			{
-				int remainingSeconds = Mathf.CeilToInt((float)remaining);
-				AppendGeneralLog($"Build complete. Waiting {remainingSeconds}s before upload to avoid Steam rate limits...", false);
-				_isBatchUploadCooldownActive = true;
-				_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Built. Waiting {remainingSeconds}s before upload...";
-				_progressValue = 0.1f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
-				_state = DeployState.Uploading;
-				Repaint();
-				return;
-			}
-
-			PrepareUploadSequence();
-			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Uploading {cfg.name}...";
+			double remaining = Math.Max(cooldownSeconds - elapsed, PostBuildUploadBreatherSeconds);
+			int batchIndexAtSchedule = _batchCurrentIndex;
+			AppendGeneralLog($"Build complete. Waiting {Mathf.CeilToInt((float)remaining)}s before upload...", false);
 			_progressValue = 0.1f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
 			_state = DeployState.Uploading;
-			LaunchNextUploadTarget();
+			Repaint();
+
+			ScheduleDelayed(remaining,
+				() =>
+				{
+					PrepareUploadSequence();
+					_taskLabel = $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Uploading {cfg.name}...";
+					_progressValue = 0.1f + 0.9f * ((float)batchIndexAtSchedule / _batchConfigs.Count);
+					_state = DeployState.Uploading;
+					LaunchNextUploadTarget();
+				},
+				remainingSeconds => $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Built. Waiting {remainingSeconds}s before upload...");
 		}
 
 		private void LoadBatchConfigs()
@@ -1446,13 +1468,23 @@ namespace SteamItchIoDeployer
 			double remaining = cooldownSeconds - elapsed;
 			if (remaining > 0.0)
 			{
+				int batchIndexAtSchedule = _batchCurrentIndex;
 				int remainingSeconds = Mathf.CeilToInt((float)remaining);
 				AppendGeneralLog($"Waiting {remainingSeconds}s before upload to avoid Steam rate limits...", false);
-				_isBatchUploadCooldownActive = true;
-				_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Waiting {remainingSeconds}s before upload...";
 				_progressValue = 0.05f + 0.9f * ((float)_batchCurrentIndex / _batchConfigs.Count);
 				_state = DeployState.Uploading;
 				Repaint();
+
+				ScheduleDelayed(remaining,
+					() =>
+					{
+						PrepareUploadSequence();
+						_taskLabel = $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Uploading {cfg.name}...";
+						_progressValue = 0.05f + 0.9f * ((float)batchIndexAtSchedule / _batchConfigs.Count);
+						_state = DeployState.Uploading;
+						LaunchNextUploadTarget();
+					},
+					remainingSecondsTick => $"[{batchIndexAtSchedule + 1}/{_batchConfigs.Count}] Waiting {remainingSecondsTick}s before upload...");
 				return;
 			}
 
@@ -1529,11 +1561,24 @@ namespace SteamItchIoDeployer
 				return;
 			}
 
-			PrepareUploadSequence();
-			_taskLabel = "Preparing uploads...";
+			double elapsed = EditorApplication.timeSinceStartup - _lastUploadCompletedTime;
+			double cooldownSeconds = GetBatchUploadCooldownSeconds();
+			double remaining = Math.Max(cooldownSeconds - elapsed, PostBuildUploadBreatherSeconds);
+			AppendGeneralLog($"Build complete. Waiting {Mathf.CeilToInt((float)remaining)}s before upload...", false);
 			_progressValue = 0.6f;
 			_state = DeployState.Uploading;
-			LaunchNextUploadTarget();
+			Repaint();
+
+			ScheduleDelayed(remaining,
+				() =>
+				{
+					PrepareUploadSequence();
+					_taskLabel = "Preparing uploads...";
+					_progressValue = 0.6f;
+					_state = DeployState.Uploading;
+					LaunchNextUploadTarget();
+				},
+				remainingSeconds => $"Built. Waiting {remainingSeconds}s before upload...");
 		}
 
 		private void PrepareUploadSequence()
@@ -1541,6 +1586,8 @@ namespace SteamItchIoDeployer
 			_isTestLoginContext = false;
 			_pendingUploads.Clear();
 			_steamGuardCodeInput = "";
+			_lastLaunchedUploadTarget = DeployTargets.None;
+			_uploadTimeoutRetryCount = 0;
 
 			PersistSavedCredentials();
 			DeployTargets selectedTargets = GetSelectedTargets();
@@ -1575,6 +1622,12 @@ namespace SteamItchIoDeployer
 			}
 
 			DeployTargets nextTarget = _pendingUploads.Peek();
+			if (nextTarget != _lastLaunchedUploadTarget)
+			{
+				_lastLaunchedUploadTarget = nextTarget;
+				_uploadTimeoutRetryCount = 0;
+			}
+
 			if (nextTarget == DeployTargets.Steam)
 			{
 				_selectedLogTab = LogTab.Steam;
@@ -1668,7 +1721,7 @@ namespace SteamItchIoDeployer
 				Directory.Delete(tempOutputPath, true);
 			Directory.CreateDirectory(tempOutputPath);
 
-			BuildReport report = RunUnityBuild(tempOutputPath);
+			BuildReport report = RunUnityBuild(tempOutputPath, out BuildTarget resolvedTarget);
 			if (report == null || report.summary.result != BuildResult.Succeeded)
 			{
 				try { Directory.Delete(tempOutputPath, true); } catch { }
@@ -1685,17 +1738,91 @@ namespace SteamItchIoDeployer
 
 			AppendGeneralLog($"Build succeeded -> {buildOutputPath}", false);
 			Debug.Log($"[SteamItchIoDeployer] Unity build succeeded. Output: {buildOutputPath}");
+
+			GenerateExecutableAliasIfNeeded(buildOutputPath, resolvedTarget);
+
 			return true;
 		}
 
-		private BuildReport RunUnityBuild(string outputPath)
+		private void TestGenerateExecutableAlias()
 		{
+			if (_steamConfig == null || string.IsNullOrWhiteSpace(_steamConfig.ExecutableAltName))
+				return;
+
+			string buildOutputPath = ResolveSelectedBuildOutputPath();
+			if (string.IsNullOrWhiteSpace(buildOutputPath))
+			{
+				EditorUtility.DisplayDialog("No Build Output Path", "Set a Build Output Path in the Build/Deploy config first.", "OK");
+				return;
+			}
+
+			Directory.CreateDirectory(buildOutputPath);
+
+			BuildTarget target = ResolveActiveBuildTargetForAliasTest();
+			if (target != BuildTarget.StandaloneWindows && target != BuildTarget.StandaloneWindows64 && target != BuildTarget.StandaloneOSX)
+			{
+				EditorUtility.DisplayDialog("Unsupported Build Target", $"Executable alias generation is only supported for Windows and macOS Standalone targets (active target is {target}).", "OK");
+				return;
+			}
+
+			string realBaseName = Application.productName;
+			bool ok = ExecutableAliasGenerator.TryGenerateAlias(target, buildOutputPath, realBaseName, _steamConfig.ExecutableAltName, out string aliasMessage);
+
+			if (!string.IsNullOrEmpty(aliasMessage))
+				AppendGeneralLog($"[Test Generate] {aliasMessage}", !ok);
+
+			if (ok)
+			{
+				string realExeFileName = realBaseName + GetExeExtension(target);
+				bool realExeExists = target == BuildTarget.StandaloneOSX
+					? Directory.Exists(Path.Combine(buildOutputPath, realExeFileName))
+					: File.Exists(Path.Combine(buildOutputPath, realExeFileName));
+				string suffix = realExeExists ? "" : $"\n\nNote: '{realExeFileName}' does not exist yet in this folder — run a real build before launching the alias to test it end-to-end.";
+				EditorUtility.DisplayDialog("Alias Executable Generated", $"Generated in:\n{buildOutputPath}{suffix}", "OK");
+				EditorUtility.RevealInFinder(buildOutputPath);
+			}
+			else
+			{
+				EditorUtility.DisplayDialog("Generation Failed", aliasMessage ?? "Unknown error.", "OK");
+			}
+		}
+
+		private BuildTarget ResolveActiveBuildTargetForAliasTest()
+		{
+#if UNITY_6000_0_OR_NEWER
+			if (_buildDeployConfig != null && _buildDeployConfig.BuildProfile != null)
+				return GetBuildTargetFromProfile(_buildDeployConfig.BuildProfile);
+#endif
+			return EditorUserBuildSettings.activeBuildTarget;
+		}
+
+		private void GenerateExecutableAliasIfNeeded(string buildOutputPath, BuildTarget target)
+		{
+			if (target != BuildTarget.StandaloneWindows && target != BuildTarget.StandaloneWindows64 && target != BuildTarget.StandaloneOSX)
+				return;
+
+			if (_steamConfig == null || string.IsNullOrWhiteSpace(_steamConfig.ExecutableAltName))
+				return;
+
+			string realBaseName = Application.productName;
+			bool ok = ExecutableAliasGenerator.TryGenerateAlias(target, buildOutputPath, realBaseName, _steamConfig.ExecutableAltName, out string aliasMessage);
+
+			if (!string.IsNullOrEmpty(aliasMessage))
+				AppendGeneralLog(aliasMessage, !ok);
+			if (!ok)
+				Debug.LogWarning($"[SteamItchIoDeployer] {aliasMessage}");
+		}
+
+		private BuildReport RunUnityBuild(string outputPath, out BuildTarget resolvedTarget)
+		{
+			resolvedTarget = EditorUserBuildSettings.activeBuildTarget;
 			try
 			{
 	#if UNITY_6000_0_OR_NEWER
 				if (_buildDeployConfig != null && _buildDeployConfig.BuildProfile != null)
 				{
 					BuildTarget profileTarget = GetBuildTargetFromProfile(_buildDeployConfig.BuildProfile);
+					resolvedTarget = profileTarget;
 					var profileOptions = new BuildPlayerWithProfileOptions
 					{
 						buildProfile = _buildDeployConfig.BuildProfile,
@@ -1708,6 +1835,7 @@ namespace SteamItchIoDeployer
 	#endif
 
 				BuildPlayerOptions opts = GetBuildPlayerOptionsWithoutDialog();
+				resolvedTarget = opts.target;
 				opts.locationPathName = GetBuildLocationPath(outputPath, opts.target);
 				return BuildPipeline.BuildPlayer(opts);
 			}
@@ -1889,7 +2017,7 @@ namespace SteamItchIoDeployer
 			_isProcessRunning = false;
 			_pendingUploads.Clear();
 			_isBatchMode = false;
-			_isBatchUploadCooldownActive = false;
+			CancelDelayedContinuation();
 			_state = DeployState.Setup;
 			_taskLabel = "";
 			AppendGeneralLog("Operation was manually cancelled.", true);
@@ -1899,15 +2027,44 @@ namespace SteamItchIoDeployer
 		{
 			string toolName = _activeToolKind == CliProcessHandler.CliToolKind.Butler ? "butler" : "steamcmd";
 			double timeoutSeconds = _processHandler?.OutputIdleTimeoutSeconds ?? 0.0;
-			AppendLogForTool(_activeToolKind, $"TIMEOUT: No output received for {timeoutSeconds:0}s — process appears to be stalled.", true);
 
 			_processHandler?.Kill();
 			_processHandler?.Dispose();
 			_processHandler = null;
 			_isProcessRunning = false;
 
-			SetFailedState($"{toolName} timed out after {timeoutSeconds:0}s of no output.");
+			_uploadTimeoutRetryCount++;
+			if (_uploadTimeoutRetryCount <= MaxUploadTimeoutRetries)
+			{
+				AppendLogForTool(_activeToolKind, $"TIMEOUT: No output received for {timeoutSeconds:0}s — process appears stalled. Retrying ({_uploadTimeoutRetryCount}/{MaxUploadTimeoutRetries}) in {UploadTimeoutRetryDelaySeconds:0}s...", true);
+				_state = _isTestLoginContext ? DeployState.TestingLogin : DeployState.Uploading;
+				Repaint();
+
+				Action retry = _isTestLoginContext
+					? (Action)(() => LaunchSteamTestLogin(""))
+					: LaunchNextUploadTarget;
+
+				ScheduleDelayed(UploadTimeoutRetryDelaySeconds, retry,
+					remainingSeconds => $"{toolName} stalled — retrying ({_uploadTimeoutRetryCount}/{MaxUploadTimeoutRetries}) in {remainingSeconds}s...");
+				return;
+			}
+
+			AppendLogForTool(_activeToolKind, $"TIMEOUT: No output received for {timeoutSeconds:0}s — process appears to be stalled. Giving up after {MaxUploadTimeoutRetries} retries.", true);
+			SetFailedState($"{toolName} timed out after {timeoutSeconds:0}s of no output ({MaxUploadTimeoutRetries} retries exhausted).");
 			Repaint();
+		}
+
+		private void ScheduleDelayed(double delaySeconds, Action continuation, Func<int, string> waitingLabel)
+		{
+			_delayedContinuationEndTime = EditorApplication.timeSinceStartup + delaySeconds;
+			_delayedContinuation = continuation;
+			_delayedContinuationLabel = waitingLabel;
+		}
+
+		private void CancelDelayedContinuation()
+		{
+			_delayedContinuation = null;
+			_delayedContinuationLabel = null;
 		}
 
 		private CliProcessHandler CreateAndWireProcessHandler(CliProcessHandler.CliToolKind toolKind)
@@ -2476,7 +2633,7 @@ namespace SteamItchIoDeployer
 		{
 			_pendingUploads.Clear();
 			_isBatchMode = false;
-			_isBatchUploadCooldownActive = false;
+			CancelDelayedContinuation();
 			_state = DeployState.Failed;
 			_taskLabel = reason;
 		}

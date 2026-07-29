@@ -35,6 +35,14 @@ namespace SteamItchIoDeployer
                  "Example: *.pdb, _BurstDebugInformation_DoNotShip, *.lib")]
         public string IgnoreFiles = "*.pdb, _BurstDebugInformation_DoNotShip";
 
+        [Tooltip("Optional. Set this if the launch executable configured on the Steamworks partner site " +
+                 "does not match the actual build executable name (e.g. Steamworks expects 'App' " +
+                 "but the Unity build produces 'MyApp'). A tiny forwarder is generated next to the real " +
+                 "build output that simply launches the real executable and exits — App.exe on Windows, " +
+                 "or an App.app bundle on macOS. Leave blank if the Steamworks launch executable already " +
+                 "matches the build output. Supported for Windows and macOS Standalone builds only.")]
+        public string ExecutableAltName = "";
+
         [Tooltip("Human-readable description for this build shown in the Steamworks build history. " +
                  "Supports {Version}, {Date}, {DateTime}, and {GitSHA} macro substitution. " +
                  "{GitSHA} is resolved from 'git rev-parse HEAD'; falls back to 'NO_SHA' if git is unavailable or the project is not a repository.")]
