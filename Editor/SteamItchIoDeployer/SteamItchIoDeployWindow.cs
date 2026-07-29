@@ -1214,6 +1214,13 @@ namespace SteamItchIoDeployer
 
 			AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} ---", false);
 
+			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath()))
+			{
+				_isBatchMode = false;
+				SetFailedState($"Batch build cancelled at config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name}");
+				return;
+			}
+
 			_state = DeployState.Building;
 			_progressValue = (float)_batchCurrentIndex / _batchConfigs.Count;
 			_taskLabel = $"[{_batchCurrentIndex + 1}/{_batchConfigs.Count}] Building {cfg.name}...";
@@ -1271,6 +1278,13 @@ namespace SteamItchIoDeployer
 			{
 				_isBatchMode = false;
 				SetFailedState($"Validation failed for config [{_batchCurrentIndex + 1}]: {cfg.name}");
+				return;
+			}
+
+			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath()))
+			{
+				_isBatchMode = false;
+				SetFailedState($"Batch cancelled at config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name}");
 				return;
 			}
 
@@ -1452,6 +1466,7 @@ namespace SteamItchIoDeployer
 		private void StartBuildOnly()
 		{
 			if (!EnsureBuildOutputPathForBuild()) return;
+			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath())) return;
 
 			ClearAllLogBuffers();
 			_selectedLogTab = LogTab.General;
@@ -1494,6 +1509,7 @@ namespace SteamItchIoDeployer
 		private void StartDeployment()
 		{
 			if (!ValidateSelectedTargetsForUpload(showDialogs: true, requireCredentials: true, requireBuildOutput: true)) return;
+			if (!ConfirmBuildOutputPathOverwrite(ResolveSelectedBuildOutputPath())) return;
 
 			ClearAllLogBuffers();
 			_selectedLogTab = LogTab.General;
@@ -2038,6 +2054,21 @@ namespace SteamItchIoDeployer
 			if ((selectedTargets & DeployTargets.Steam) != 0 && _steamConfig == null) return false;
 			if ((selectedTargets & DeployTargets.ItchIo) != 0 && _itchIoConfig == null) return false;
 			return true;
+		}
+
+		private bool ConfirmBuildOutputPathOverwrite(string buildOutputPath)
+		{
+			if (string.IsNullOrWhiteSpace(buildOutputPath) || !Directory.Exists(buildOutputPath))
+				return true;
+
+			if (Directory.GetFileSystemEntries(buildOutputPath).Length == 0)
+				return true;
+
+			return EditorUtility.DisplayDialog(
+				"Build Output Path Not Empty",
+				$"The selected build output folder already contains files:\n\n{buildOutputPath}\n\nBuilding into this folder may overwrite or leave behind stale files. Continue?",
+				"Continue",
+				"Cancel");
 		}
 
 		private bool CheckAnyBuildOutputExists()
