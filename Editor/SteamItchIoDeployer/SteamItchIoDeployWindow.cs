@@ -1247,6 +1247,7 @@ namespace SteamItchIoDeployer
 		private void StartBatchBuildOnly()
 		{
 			if (_batchConfigs.Count == 0 || !_batchConfigs.TrueForAll(c => c != null)) return;
+			if (!ConfirmBatchBuildOutputPathsOverwrite()) return;
 
 			_buildOutputOverwriteConfirmed = false;
 			_isBatchMode = true;
@@ -1280,13 +1281,6 @@ namespace SteamItchIoDeployer
 
 			AppendGeneralLog($"--- Config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name} ---", false);
 
-			if (!ConfirmBuildOutputPathOverwriteOnce(ResolveSelectedBuildOutputPath()))
-			{
-				_isBatchMode = false;
-				SetFailedState($"Batch build cancelled at config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name}");
-				return;
-			}
-
 			if (!EnsureActiveBuildTarget(PendingBuildAction.BatchBuildOnlyItem))
 				return;
 
@@ -1312,6 +1306,7 @@ namespace SteamItchIoDeployer
 		private void StartBatchDeployment()
 		{
 			if (_batchConfigs.Count == 0 || !_batchConfigs.TrueForAll(c => c != null)) return;
+			if (!ConfirmBatchBuildOutputPathsOverwrite()) return;
 
 			_buildOutputOverwriteConfirmed = false;
 			_isBatchMode = true;
@@ -1349,13 +1344,6 @@ namespace SteamItchIoDeployer
 			{
 				_isBatchMode = false;
 				SetFailedState($"Validation failed for config [{_batchCurrentIndex + 1}]: {cfg.name}");
-				return;
-			}
-
-			if (!ConfirmBuildOutputPathOverwriteOnce(ResolveSelectedBuildOutputPath()))
-			{
-				_isBatchMode = false;
-				SetFailedState($"Batch cancelled at config [{_batchCurrentIndex + 1}/{_batchConfigs.Count}]: {cfg.name}");
 				return;
 			}
 
@@ -2639,6 +2627,57 @@ namespace SteamItchIoDeployer
 			return EditorUtility.DisplayDialog(
 				"Build Output Path Not Empty",
 				$"The selected build output folder already contains files:\n\n{buildOutputPath}\n\nBuilding into this folder may overwrite or leave behind stale files. Continue?",
+				"Continue",
+				"Cancel");
+		}
+
+		private bool ConfirmBatchBuildOutputPathsOverwrite()
+		{
+			var configsByPath = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+			foreach (BuildDeployConfig cfg in _batchConfigs)
+			{
+				if (cfg == null) continue;
+
+				string resolvedPath = ResolveConfigPath(cfg.BuildOutputPath);
+				if (string.IsNullOrWhiteSpace(resolvedPath)) continue;
+
+				string normalizedPath = Path.GetFullPath(resolvedPath);
+				if (!configsByPath.TryGetValue(normalizedPath, out List<string> configNames))
+				{
+					configNames = new List<string>();
+					configsByPath.Add(normalizedPath, configNames);
+				}
+				configNames.Add(cfg.name);
+			}
+
+			var warnings = new List<string>();
+			foreach (KeyValuePair<string, List<string>> entry in configsByPath)
+			{
+				bool containsFiles = Directory.Exists(entry.Key)
+					&& Directory.EnumerateFileSystemEntries(entry.Key).Any();
+				bool sharedByMultipleConfigs = entry.Value.Count > 1;
+				if (!containsFiles && !sharedByMultipleConfigs) continue;
+
+				var reasons = new List<string>();
+				if (containsFiles)
+					reasons.Add("already contains files");
+				if (sharedByMultipleConfigs)
+					reasons.Add("is shared by multiple batch configs");
+
+				warnings.Add(
+					$"{string.Join(", ", entry.Value)}\n" +
+					$"{entry.Key}\n" +
+					$"({string.Join("; ", reasons)})");
+			}
+
+			if (warnings.Count == 0)
+				return true;
+
+			return EditorUtility.DisplayDialog(
+				"Build Output Paths Need Confirmation",
+				"The following batch build output folders may be overwritten:\n\n" +
+				$"{string.Join("\n\n", warnings)}\n\n" +
+				"Confirm all output paths now and continue with the entire batch?",
 				"Continue",
 				"Cancel");
 		}

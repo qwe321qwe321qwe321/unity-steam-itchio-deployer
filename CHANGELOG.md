@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and version numbers follow the existing `v0.x.y` tag style used in this repository.
 
+## [v0.1.14] - 2026-07-30
+
+### Fixed
+
+- Batch build-only and build-and-upload operations now confirm all non-empty or shared build output paths before the batch starts, instead of interrupting the operation with overwrite warnings between items.
+
 ## [v0.1.13] - 2026-07-29
 
 ### Fixed
