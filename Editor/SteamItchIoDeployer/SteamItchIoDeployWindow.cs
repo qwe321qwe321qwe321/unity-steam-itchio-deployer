@@ -1758,6 +1758,15 @@ namespace SteamItchIoDeployer
 			}
 		}
 
+		// Immediately after SwitchActiveBuildTarget/SetActiveBuildProfile finishes (even once activeBuildTarget
+		// already reports the new value and isCompiling/isUpdating are both false), Unity can still reject the
+		// very next BuildPipeline.BuildPlayer call with a generic, error-free failure while some internal
+		// platform state finishes settling. That failure is near-instant and reports BuildResult.Unknown with
+		// zero errors. Retrying once after a short pause reliably succeeds without needing a second build target
+		// switch, so we retry in place here instead of surfacing a spurious failure to the user.
+		private const int MaxBuildSettlingRetries = 2;
+		private const double BuildSettlingRetryDelaySeconds = 2.0;
+
 		private bool RunBuildIntoResolvedPath(string buildOutputPath, out string failureReason)
 		{
 			failureReason = null;
@@ -1766,11 +1775,35 @@ namespace SteamItchIoDeployer
 			Repaint();
 
 			string tempOutputPath = buildOutputPath + "_steamdeployer_tmp";
-			if (Directory.Exists(tempOutputPath))
-				Directory.Delete(tempOutputPath, true);
-			Directory.CreateDirectory(tempOutputPath);
 
-			BuildReport report = RunUnityBuild(tempOutputPath, out BuildTarget resolvedTarget);
+			BuildReport report = null;
+			BuildTarget resolvedTarget = EditorUserBuildSettings.activeBuildTarget;
+			for (int attempt = 0; ; attempt++)
+			{
+				if (Directory.Exists(tempOutputPath))
+					Directory.Delete(tempOutputPath, true);
+				Directory.CreateDirectory(tempOutputPath);
+
+				report = RunUnityBuild(tempOutputPath, out resolvedTarget);
+				if (report != null && report.summary.result == BuildResult.Succeeded)
+					break;
+
+				bool looksLikeSettlingRace = report != null
+					&& report.summary.result == BuildResult.Unknown
+					&& report.summary.totalErrors == 0;
+
+				if (!looksLikeSettlingRace || attempt >= MaxBuildSettlingRetries)
+					break;
+
+				AppendGeneralLog(
+					$"Build for {resolvedTarget} was rejected immediately with no errors (Result=Unknown). This usually " +
+					$"means the Editor hadn't finished settling after switching the active build target/profile. " +
+					$"Retrying in {BuildSettlingRetryDelaySeconds:0}s (attempt {attempt + 2}/{MaxBuildSettlingRetries + 1})...",
+					false);
+				Repaint();
+				System.Threading.Thread.Sleep(TimeSpan.FromSeconds(BuildSettlingRetryDelaySeconds));
+			}
+
 			if (report == null || report.summary.result != BuildResult.Succeeded)
 			{
 				try { Directory.Delete(tempOutputPath, true); } catch { }
@@ -2116,14 +2149,27 @@ namespace SteamItchIoDeployer
 
 		private static bool GuardActiveBuildTarget(BuildTarget target)
 		{
-			if (EditorUserBuildSettings.activeBuildTarget == target)
-				return true;
+			if (EditorUserBuildSettings.activeBuildTarget != target)
+			{
+				Debug.LogError(
+					$"[SteamItchIoDeployer] Refusing to build {target} while the active build target is " +
+					$"{EditorUserBuildSettings.activeBuildTarget}. This would let platform-dependent preprocessors " +
+					"(notably Addressables) generate content for the wrong platform.");
+				return false;
+			}
 
-			Debug.LogError(
-				$"[SteamItchIoDeployer] Refusing to build {target} while the active build target is " +
-				$"{EditorUserBuildSettings.activeBuildTarget}. This would let platform-dependent preprocessors " +
-				"(notably Addressables) generate content for the wrong platform.");
-			return false;
+			// On Unity 6, switching the active platform via BuildProfile.SetActiveBuildProfile() updates
+			// activeBuildTarget but leaves EditorUserBuildSettings.selectedBuildTargetGroup pointing at whatever
+			// group was last selected through the legacy Build Settings window/API. BuildPipeline.BuildPlayer and
+			// the Addressables/SBP preprocessors that run inside it consult selectedBuildTargetGroup, so a stale
+			// value here causes an immediate, error-free InvalidOperationException ("Unable to build with the
+			// current configuration") even though activeBuildTarget itself is correct. Force it back in sync
+			// right before every build.
+			BuildTargetGroup requiredGroup = BuildPipeline.GetBuildTargetGroup(target);
+			if (EditorUserBuildSettings.selectedBuildTargetGroup != requiredGroup)
+				EditorUserBuildSettings.selectedBuildTargetGroup = requiredGroup;
+
+			return true;
 		}
 
 		private bool ValidateAddressablesBuildTarget(string buildRoot, BuildTarget target, out string failureReason)
