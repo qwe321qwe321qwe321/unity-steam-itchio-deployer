@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and version numbers follow the existing `v0.x.y` tag style used in this repository.
 
+## [v0.1.16] - 2026-08-04
+
+### Fixed
+
+- Builds now save any dirty open scenes before calling `BuildPipeline.BuildPlayer`, so the "Scene(s) have been modified, save?" dialog no longer pops up and stalls an unattended batch build.
+
 ## [v0.1.14] - 2026-07-30
 
 ### Fixed

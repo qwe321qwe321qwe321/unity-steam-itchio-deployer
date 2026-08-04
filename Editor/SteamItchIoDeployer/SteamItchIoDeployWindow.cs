@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 
 namespace SteamItchIoDeployer
@@ -1776,6 +1777,10 @@ namespace SteamItchIoDeployer
 
 			string tempOutputPath = buildOutputPath + "_steamdeployer_tmp";
 
+			// Save any dirty open scenes up front so BuildPipeline.BuildPlayer doesn't pop the
+			// "Scene(s) have been modified, save?" dialog and stall an unattended batch build.
+			EditorSceneManager.SaveOpenScenes();
+
 			BuildReport report = null;
 			BuildTarget resolvedTarget = EditorUserBuildSettings.activeBuildTarget;
 			for (int attempt = 0; ; attempt++)
@@ -1803,7 +1808,6 @@ namespace SteamItchIoDeployer
 				Repaint();
 				System.Threading.Thread.Sleep(TimeSpan.FromSeconds(BuildSettlingRetryDelaySeconds));
 			}
-
 			if (report == null || report.summary.result != BuildResult.Succeeded)
 			{
 				try { Directory.Delete(tempOutputPath, true); } catch { }
