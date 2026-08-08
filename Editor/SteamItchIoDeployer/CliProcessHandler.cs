@@ -4,9 +4,9 @@ using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using SteamItchIoDeployerCore;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
@@ -30,16 +30,14 @@ namespace SteamItchIoDeployer
 		private readonly struct LogEntry
 		{
 			public readonly string Message;
-			public readonly LogLevel Level;
+			public readonly CliLogLevel Level;
 
-			public LogEntry(string message, LogLevel level)
+			public LogEntry(string message, CliLogLevel level)
 			{
 				Message = message;
 				Level   = level;
 			}
 		}
-
-		private enum LogLevel { Info, Error, SteamGuardRequired, AuthFailure }
 
 		private readonly ConcurrentQueue<LogEntry> _logQueue = new ConcurrentQueue<LogEntry>();
 		private readonly CliToolKind _toolKind;
@@ -67,80 +65,32 @@ namespace SteamItchIoDeployer
 		public event Action<int> OnProcessExited;
 		public event Action OnTimeoutDetected;
 
-		private static readonly Regex SteamGuardRequiredPattern = new Regex(
-			@"(not been authenticated for your account using Steam Guard|" +
-			@"Steam Guard code:|" +
-			@"Steam Guard code required|" +
-			@"FAILED login with result code RequireTwoFactorCode|" +
-			@"FAILED login with result code RequirePasswordEntry|" +
-			@"Enter the current code from your Steam Guard)",
-			RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-		private static readonly Regex SteamAuthFailurePattern = new Regex(
-			@"(Invalid Password|Two-factor code mismatch|" +
-			@"Login Failure|Logging in user.*Failed|FAILED login with result code InvalidPassword)",
-			RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-		private static readonly Regex ButlerAuthFailurePattern = new Regex(
-			@"(authentication not complete|api key|unauthorized|forbidden|invalid api key|not logged in)",
-			RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-		private static readonly Regex GenericErrorPattern = new Regex(
-			@"(ERROR!|error:|FAILED|Build Failed|Upload Failed|rate limit exceeded)",
-			RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
 		public CliProcessHandler(CliToolKind toolKind)
 		{
 			_toolKind = toolKind;
 		}
 
-		public static string DescribeSteamExitCode(int exitCode)
+		private static SteamItchIoDeployerCore.CliToolKind ToCoreToolKind(CliToolKind toolKind)
 		{
-			switch (exitCode)
+			switch (toolKind)
 			{
-				case 0:  return "Success.";
-				case 1:  return "Unknown / general error.";
-				case 2:  return "Steam session error — already logged in elsewhere, or generic login failure.";
-				case 3:  return "No connection to the Steam network. Check your internet connection.";
-				case 4:  return "Connection timeout or invalid command-line argument.";
-				case 5:  return "Steam API / SDK initialisation failed.";
-				case 6:  return "Build commit failed. Content was uploaded but could not be finalised. Common causes: SetLive branch not eligible yet, invalid branch name, or a transient Valve-side error.";
-				case 7:  return "Too many failed login attempts. Wait before retrying.";
-				case 8:  return "Rate limit exceeded — too many steamcmd operations in a short period. Wait and retry.";
-				case 42: return "Rate limit exceeded (Valve-side throttle). Wait several minutes before retrying.";
-				default: return $"Undocumented exit code {exitCode}. Check the steamcmd log in the logs/ folder for details.";
+				case CliToolKind.SteamCmd: return SteamItchIoDeployerCore.CliToolKind.SteamCmd;
+				case CliToolKind.Butler:   return SteamItchIoDeployerCore.CliToolKind.Butler;
+				default:                   return SteamItchIoDeployerCore.CliToolKind.Generic;
 			}
 		}
 
-		public static string BuildSteamArguments(string username, string password, string steamGuardCode, string appVdfPath)
-		{
-			string quotedVdf = $"\"{appVdfPath}\"";
+		public static string DescribeSteamExitCode(int exitCode) => SteamExitCodeDescriptions.Describe(exitCode);
 
-			if (!string.IsNullOrWhiteSpace(steamGuardCode))
-			{
-				return $"+set_steam_guard_code {steamGuardCode.Trim()} " +
-				       $"+login {username} {password} " +
-				       $"+run_app_build {quotedVdf} " +
-				       $"+quit";
-			}
+		public static string BuildSteamArguments(string username, string password, string steamGuardCode, string appVdfPath) =>
+			CliArgumentQuoting.Join(SteamCommandBuilder.BuildLoginAndRunAppBuildArguments(username, password, steamGuardCode, appVdfPath));
 
-			return $"+login {username} {password} " +
-			       $"+run_app_build {quotedVdf} " +
-			       $"+quit";
-		}
+		public static string BuildSteamTestLoginArguments(string username, string password, string steamGuardCode = "") =>
+			CliArgumentQuoting.Join(SteamCommandBuilder.BuildTestLoginArguments(username, password, steamGuardCode));
 
-		public static string BuildSteamTestLoginArguments(string username, string password, string steamGuardCode = "")
-		{
-			if (!string.IsNullOrWhiteSpace(steamGuardCode))
-			{
-				return $"+set_steam_guard_code {steamGuardCode.Trim()} " +
-				       $"+login {username} {password} " +
-				       $"+quit";
-			}
-
-			return $"+login {username} {password} +quit";
-		}
-
+		// The "hidden" parameter is accepted for source compatibility with existing call sites but,
+		// same as before this was extracted into the shared core, has no effect: hiding an itch.io
+		// channel is a dashboard-only setting with no butler push flag.
 		public static string BuildButlerPushArguments(
 			string buildOutputPath,
 			string target,
@@ -148,27 +98,8 @@ namespace SteamItchIoDeployer
 			string userVersion,
 			bool hidden,
 			bool ifChanged,
-			string[] ignorePatterns)
-		{
-			string args = $"push \"{buildOutputPath}\" {target}:{channel}";
-
-			if (!string.IsNullOrWhiteSpace(userVersion))
-				args += $" --userversion \"{userVersion}\"";
-
-			if (ifChanged)
-				args += " --if-changed";
-
-			if (ignorePatterns != null)
-			{
-				foreach (string pattern in ignorePatterns)
-				{
-					if (!string.IsNullOrWhiteSpace(pattern))
-						args += $" --ignore \"{pattern.Trim()}\"";
-				}
-			}
-
-			return args;
-		}
+			string[] ignorePatterns) =>
+			CliArgumentQuoting.Join(ButlerCommandBuilder.BuildPushArguments(buildOutputPath, target, channel, userVersion, ifChanged, ignorePatterns));
 
 		public bool Start(string executablePath, string arguments, IReadOnlyDictionary<string, string> environmentVariables = null)
 		{
@@ -233,15 +164,15 @@ namespace SteamItchIoDeployer
 			{
 				switch (entry.Level)
 				{
-					case LogLevel.SteamGuardRequired:
+					case CliLogLevel.SteamGuardRequired:
 						OnSteamGuardRequired?.Invoke(entry.Message);
 						DrainRemainingQueue();
 						return true;
-					case LogLevel.AuthFailure:
+					case CliLogLevel.AuthFailure:
 						OnAuthenticationFailure?.Invoke(entry.Message);
 						DrainRemainingQueue();
 						return true;
-					case LogLevel.Error:
+					case CliLogLevel.Error:
 						OnErrorLine?.Invoke(entry.Message);
 						break;
 					default:
@@ -352,25 +283,8 @@ namespace SteamItchIoDeployer
 			_logQueue.Enqueue(new LogEntry(line, ClassifyLogLine(line, fromStdErr)));
 		}
 
-		private LogLevel ClassifyLogLine(string line, bool fromStdErr)
-		{
-			if (_toolKind == CliToolKind.SteamCmd)
-			{
-				if (SteamGuardRequiredPattern.IsMatch(line))
-					return LogLevel.SteamGuardRequired;
-
-				if (SteamAuthFailurePattern.IsMatch(line))
-					return LogLevel.AuthFailure;
-			}
-
-			if (_toolKind == CliToolKind.Butler && ButlerAuthFailurePattern.IsMatch(line))
-				return LogLevel.AuthFailure;
-
-			if (fromStdErr || GenericErrorPattern.IsMatch(line))
-				return LogLevel.Error;
-
-			return LogLevel.Info;
-		}
+		private CliLogLevel ClassifyLogLine(string line, bool fromStdErr) =>
+			CliOutputClassifier.Classify(ToCoreToolKind(_toolKind), line, fromStdErr);
 
 		private void DrainRemainingQueue()
 		{
