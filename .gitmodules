@@ -1,3 +1,3 @@
-[submodule "SteamItchIoDeployCore"]
-	path = SteamItchIoDeployCore
+[submodule "Editor/SteamItchIoDeployer/SteamItchIoDeployCore"]
+	path = Editor/SteamItchIoDeployer/SteamItchIoDeployCore
 	url = https://github.com/qwe321qwe321qwe321/steam-itchio-deploy-core.git
