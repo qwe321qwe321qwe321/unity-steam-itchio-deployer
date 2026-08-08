@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and version numbers follow the existing `v0.x.y` tag style used in this repository.
 
+## [v0.1.17] - 2026-08-08
+
+### Changed
+
+- Extracted the engine-agnostic parts of the deploy logic (steamcmd/butler argument building, VDF script rendering, CLI output classification, macro resolution, git SHA lookup, steamcmd exit code descriptions, and credential key-derivation hashing) into a shared [`steam-itchio-deploy-core`](https://github.com/qwe321qwe321qwe321/steam-itchio-deploy-core) library, added here as a git submodule under `Editor/SteamItchIoDeployer/ThirdParty/`. The same code is now also used by the Godot version of this tool, so fixes to shared behavior (e.g. Steam Guard prompt detection) only need to be made once. No behavior change is intended; `steamcmd`/`butler` arguments are now properly quoted when they contain whitespace, fixing a latent bug where a Steam password containing a space would have been split into multiple arguments.
+
 ## [v0.1.16] - 2026-08-04
 
 ### Fixed

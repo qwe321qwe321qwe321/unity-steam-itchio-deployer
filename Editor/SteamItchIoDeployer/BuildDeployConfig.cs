@@ -1,16 +1,8 @@
-using System;
+using SteamItchIoDeployerCore;
 using UnityEngine;
 
 namespace SteamItchIoDeployer
 {
-	[Flags]
-	public enum DeployTargets
-	{
-		None   = 0,
-		Steam  = 1 << 0,
-		ItchIo = 1 << 1,
-	}
-
 	/// <summary>
 	/// ScriptableObject asset that stores shared, non-sensitive build and deployment settings.
 	/// Credentials stay in project-scoped EditorPrefs on the local machine so this asset is safe to commit.

@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using SteamItchIoDeployerCore;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
@@ -2960,41 +2961,18 @@ namespace SteamItchIoDeployer
 
 		private static string ResolveMacros(string template)
 		{
-			if (string.IsNullOrEmpty(template)) return Application.version;
-			return template
-				.Replace("{Version}", Application.version)
-				.Replace("{Date}", DateTime.Now.ToString("yyyy-MM-dd"))
-				.Replace("{DateTime}", DateTime.Now.ToString("yyyy-MM-dd-HH-mm-ss"))
-				.Replace("{GitSHA}", ResolveGitSha());
+			DateTime now = DateTime.Now;
+			return MacroResolver.Resolve(
+				template,
+				Application.version,
+				now.ToString("yyyy-MM-dd"),
+				now.ToString("yyyy-MM-dd-HH-mm-ss"),
+				ResolveGitSha());
 		}
 
 		private static string ResolveGitSha()
 		{
-			try
-			{
-				var psi = new System.Diagnostics.ProcessStartInfo
-				{
-					FileName               = "git",
-					Arguments              = "rev-parse HEAD",
-					UseShellExecute        = false,
-					CreateNoWindow         = true,
-					RedirectStandardOutput = true,
-					RedirectStandardError  = true,
-					WorkingDirectory       = System.IO.Path.GetFullPath("."),
-				};
-
-				using (var proc = System.Diagnostics.Process.Start(psi))
-				{
-					if (proc == null) return "NO_SHA";
-					string output = proc.StandardOutput.ReadToEnd().Trim();
-					proc.WaitForExit();
-					return proc.ExitCode == 0 && output.Length > 0 ? output : "NO_SHA";
-				}
-			}
-			catch
-			{
-				return "NO_SHA";
-			}
+			return GitShaResolver.Resolve(System.IO.Path.GetFullPath("."));
 		}
 
 		private static string[] SplitIgnorePatterns(string csv)

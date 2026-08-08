@@ -1,6 +1,6 @@
 {
   "name": "com.pedev.unity-steam-itchio-deployer",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "displayName": "Unity Steam itch.io Deployer",
   "description": "Unity Editor tool that builds once and uploads to Steam via SteamCMD and itch.io via butler. Supports multi-target deployment, encrypted credentials, and asynchronous CLI execution.",
   "unity": "2021.3",

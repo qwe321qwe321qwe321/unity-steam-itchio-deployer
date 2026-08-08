@@ -1,6 +1,7 @@
 using System;
 using System.Security.Cryptography;
 using System.Text;
+using SteamItchIoDeployerCore;
 using UnityEditor;
 using UnityEngine;
 
@@ -42,11 +43,8 @@ namespace SteamItchIoDeployer
             // SystemInfo.deviceUniqueIdentifier is platform-specific but stable per machine.
             string keyMaterial = SystemInfo.deviceUniqueIdentifier + CRYPTO_SALT;
 
-            using (var sha256 = SHA256.Create())
-            {
-                // SHA-256(key_material) → 32 bytes → AES-256 key
-                return sha256.ComputeHash(Encoding.UTF8.GetBytes(keyMaterial));
-            }
+            // SHA-256(key_material) → 32 bytes → AES-256 key
+            return MachineKeyDerivation.Sha256(keyMaterial);
         }
 
         /// <summary>
@@ -61,11 +59,8 @@ namespace SteamItchIoDeployer
             Array.Reverse(saltChars);
             string ivMaterial = SystemInfo.deviceUniqueIdentifier + new string(saltChars);
 
-            using (var md5 = MD5.Create())
-            {
-                // MD5(iv_material) → 16 bytes → AES block-size IV
-                return md5.ComputeHash(Encoding.UTF8.GetBytes(ivMaterial));
-            }
+            // MD5(iv_material) → 16 bytes → AES block-size IV
+            return MachineKeyDerivation.Md5(ivMaterial);
         }
 
         // ─── Public API ───────────────────────────────────────────────────────────
